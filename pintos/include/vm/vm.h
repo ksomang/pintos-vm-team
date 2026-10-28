@@ -2,7 +2,7 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
-
+ 
 enum vm_type {
 	/* page not initialized */
 	VM_UNINIT = 0,
