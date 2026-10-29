@@ -66,7 +66,7 @@ spt_find_page (struct supplemental_page_table *spt, void *va) {
 	struct page *page = NULL;
 	struct page tmp_page; 
 	tmp_page.va = pg_round_down(va);
-	struct hash_elem *found_elemental = hash_find(&spt->pages, &tmp.hash_elem);
+	struct hash_elem *found_elemental = hash_find(&spt->pages, &tmp_page.hash_elem);
 	if(!found_elemental){
 		return NULL;
 	}
