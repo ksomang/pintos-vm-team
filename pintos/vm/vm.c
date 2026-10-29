@@ -171,9 +171,24 @@ vm_do_claim_page (struct page *page) {
 	return swap_in (page, frame->kva);
 }
 
+static uint64_t
+page_hash (const struct hash_elem *e, void *aux UNUSED) {
+	const struct page *p = hash_entry(e, struct page, hash_elem);
+	return hash_bytes(&p->va, sizeof p->va);
+}
+
+static bool
+page_less (const struct hash_elem *a,
+		   const struct hash_elem *b, void *aux UNUSED) {
+	const struct page *pa = hash_entry (a, struct page, hash_elem);
+	const struct page *pb = hash_entry (b, struct page, hash_elem);
+	return pa->va < pb->va;
+}
+
 /* Initialize new supplemental page table */
 void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
+	hash_init(&spt->pages, page_hash, page_less, NULL);
 }
 
 /* Copy supplemental page table from src to dst */
