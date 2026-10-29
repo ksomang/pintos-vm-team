@@ -25,43 +25,47 @@
 #include <stdint.h>
 #include "list.h"
 
-/* Hash element. */
+/* 안에 list_elem 하나만 있으므로, 즉 bucket 리스트에 걸리는 elem이다. */
 struct hash_elem {
 	struct list_elem list_elem;
 };
 
-/* Converts pointer to hash element HASH_ELEM into a pointer to
- * the structure that HASH_ELEM is embedded inside.  Supply the
- * name of the outer structure STRUCT and the member name MEMBER
- * of the hash element.  See the big comment at the top of the
- * file for an example. */
+/* hash_elem를 품고 있는 구조체의 시작 주소를 쿠하는 매크로.
+   두 번째 인자(STRUCT)에 무엇을 쓰느냐에 따라 결과 타입이 정해진다.
+   
+   ex: struct page에 hash_elem을 넣고 hash_entry (e, struct page, 멤버 이름) 이라고 하면
+   해당 struct page의 시작 주소가 나온다.
+   
+   멤버 이름이란 struct list_elem elem이라고 할때 타입이 struct list_elem, 멤버 이름이 elem이다.  */
 #define hash_entry(HASH_ELEM, STRUCT, MEMBER)                   \
 	((STRUCT *) ((uint8_t *) &(HASH_ELEM)->list_elem        \
 		- offsetof (STRUCT, MEMBER.list_elem)))
 
-/* Computes and returns the hash value for hash element E, given
- * auxiliary data AUX. */
+/* 원소 하나(e)를 받아서 그 원소로 계산한 숫자 하나(uin64_t, hash 값)를 돌려준다.
+   hash 함수는 넣을 때 한 번, 찾을 때 한 번 불리는데 두 번 다 같은 숫자가 나와야 같은 칸에서
+   넣고 찾을 수 있다. */
 typedef uint64_t hash_hash_func (const struct hash_elem *e, void *aux);
 
-/* Compares the value of two hash elements A and B, given
- * auxiliary data AUX.  Returns true if A is less than B, or
- * false if A is greater than or equal to B. */
+/* 리스트 하나를 돌면서 찾는 원소 e와 리스트의 원소 hi를 비교한다. */
 typedef bool hash_less_func (const struct hash_elem *a,
 		const struct hash_elem *b,
 		void *aux);
 
-/* Performs some operation on hash element E, given auxiliary
- * data AUX. */
+/* 보조 데이터 AUX를 받아 hash 원소 E에 어떤 작업을 한다. */
 typedef void hash_action_func (struct hash_elem *e, void *aux);
 
-/* Hash table. */
+/* Hash table.
+   hash (e)로 list 칸 번호를 정하고 그 칸 리스트만 처음부터 탐색해서 less로 같은지 비교한다.
+   비교하는 두 대상은 찾으려고 넘긴 원소 e와 그 칸 리스트에 있는 원소 hi이다. */
 struct hash {
-	size_t elem_cnt;            /* Number of elements in table. */
-	size_t bucket_cnt;          /* Number of buckets, a power of 2. */
-	struct list *buckets;       /* Array of `bucket_cnt' lists. */
-	hash_hash_func *hash;       /* Hash function. */
-	hash_less_func *less;       /* Comparison function. */
-	void *aux;                  /* Auxiliary data for `hash' and `less'. */
+	size_t elem_cnt;            /* hash table에 들어 있는 원소 개수. */
+	size_t bucket_cnt;          /* 칸(bucket, 리스트)의 개수 */
+	struct list *buckets;       /* 칸들이 줄지어 있는 배열의 시작 주소.
+								   malloc (sizeof *h->buckets * h->bucket_cnt)로 
+								   struct list를 bucket_cnt개 받는다. */
+	hash_hash_func *hash;       /* 원소를 몇 번 list에 넣을지 정하는 함수. */
+	hash_less_func *less;       /* 같은 list 안에서 원소를 비교하는 함수. */
+	void *aux;                  /* 두 함수에 넘길 추가 정보. */
 };
 
 /* A hash table iterator. */

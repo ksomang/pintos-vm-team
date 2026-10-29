@@ -3,6 +3,8 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include "threads/vaddr.h"
+#include "threads/mmu.h"
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -60,21 +62,40 @@ err:
 	return false;
 }
 
-/* Find VA from spt and return page. On error, return NULL. */
+/* hash_find는 va가 아니라 hash_elem을 받는다.
+   page_va_hash와 page_va_less는 va만 읽으므로,
+   va만 채운 임시 struct page의 elem을 넘겨 검색한다. 
+   이 page는 hash에 넣지 않는다. */
 struct page *
-spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
+spt_find_page (struct supplemental_page_table *spt, void *va) {
 	struct page *page = NULL;
-	/* TODO: Fill this function. */
+	/* spt_find_page가 가진 것은 spt와 va뿐이다. struct page는 가지고 있지 않다.
+	   struct page 변수를 선언해 va와 elem이 들어갈 자리를 만든다. */
+	struct page tmp_page;
+
+	tmp_page.va = pg_round_down(va);
+	struct hash_elem *found_elem = hash_find (&spt->page_hash, &tmp_page.elem);
+
+	if (found_elem == NULL) {
+		return NULL;
+	}
+
+	page = hash_entry (found_elem, struct page, elem);
 
 	return page;
 }
 
 /* Insert PAGE into spt with validation. */
 bool
-spt_insert_page (struct supplemental_page_table *spt UNUSED,
-		struct page *page UNUSED) {
-	int succ = false;
-	/* TODO: Fill this function. */
+spt_insert_page (struct supplemental_page_table *spt,
+		struct page *page) {
+	bool succ = false;
+	
+	struct hash_elem *existing_elem = hash_insert (&spt->page_hash, &page->elem);
+
+	if (existing_elem == NULL) {
+		succ = true;
+	}
 
 	return succ;
 }
@@ -104,16 +125,27 @@ vm_evict_frame (void) {
 	return NULL;
 }
 
-/* palloc() and get frame. If there is no available page, evict the page
- * and return it. This always return valid address. That is, if the user pool
- * memory is full, this function evicts the frame to get the available memory
- * space.*/
+/* user pool에서 물리 page를 하나 받고 그걸 담을 struct frame을 만들어 돌려준다.
+   frame의 멤버들도 초기화한다. */
 static struct frame *
 vm_get_frame (void) {
 	struct frame *frame = NULL;
-	/* TODO: Fill this function. */
+	void *kpage = palloc_get_page (PAL_USER);
 
-	ASSERT (frame != NULL);
+	if (kpage == NULL) {
+		PANIC ("TODO");
+	}
+
+	frame = malloc (sizeof (struct frame));
+
+	if (frame == NULL) {
+		palloc_free_page (kpage);
+		PANIC ("PANIC");
+	}
+	
+	frame->kva = kpage;
+	frame->page = NULL;
+
 	ASSERT (frame->page == NULL);
 	return frame;
 }
@@ -166,14 +198,44 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 
-	/* TODO: Insert page table entry to map page's VA to frame's PA. */
+	/* TODO: rw는 vm_alloc_page_with_initializer 때 완성한다. */
+	if (!pml4_set_page (thread_current ()->pml4, page->va, frame->kva, page->writable)) {
+		palloc_free_page (frame->kva);
+		free (frame);
+		page->frame = NULL;
+
+		return false;
+	}
 
 	return swap_in (page, frame->kva);
 }
 
+static uint64_t 
+page_va_hash (const struct hash_elem *e, void *aux UNUSED) {
+	struct page *page = hash_entry (e, struct page, elem);
+	uint64_t hash = hash_bytes (&page->va, 8);
+	
+	return hash;
+}
+
+static bool 
+page_va_less (const struct hash_elem *a, const struct hash_elem *b,
+		void *aux UNUSED) {
+	struct page *a_page = hash_entry (a, struct page, elem);
+	struct page *b_page = hash_entry (b, struct page, elem);
+	
+	if (a_page->va < b_page->va) {
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
 /* Initialize new supplemental page table */
 void
-supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
+supplemental_page_table_init (struct supplemental_page_table *spt) {
+	hash_init (&spt->page_hash, &page_va_hash, &page_va_less, NULL);
 }
 
 /* Copy supplemental page table from src to dst */

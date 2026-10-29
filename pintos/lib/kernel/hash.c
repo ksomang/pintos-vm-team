@@ -19,13 +19,13 @@ static void insert_elem (struct hash *, struct list *, struct hash_elem *);
 static void remove_elem (struct hash *, struct hash_elem *);
 static void rehash (struct hash *);
 
-/* Initializes hash table H to compute hash values using HASH and
-   compare hash elements using LESS, given auxiliary data AUX. */
+/* hash H를 초기화한다. hash 값은 HASH로 계산하고, 원소 비교는 LESS로 하며, 보조 데이터는 AUX다.
+   즉, 빈 hash를 쓸 수 있는 준비 상태로 만든다. */
 bool
 hash_init (struct hash *h,
 		hash_hash_func *hash, hash_less_func *less, void *aux) {
-	h->elem_cnt = 0;
-	h->bucket_cnt = 4;
+	h->elem_cnt = 0;	/* 원소 수는 0 */
+	h->bucket_cnt = 4;	/* list 수는 4 */
 	h->buckets = malloc (sizeof *h->buckets * h->bucket_cnt);
 	h->hash = hash;
 	h->less = less;
@@ -38,15 +38,7 @@ hash_init (struct hash *h,
 		return false;
 }
 
-/* Removes all the elements from H.
-
-   If DESTRUCTOR is non-null, then it is called for each element
-   in the hash.  DESTRUCTOR may, if appropriate, deallocate the
-   memory used by the hash element.  However, modifying hash
-   table H while hash_clear() is running, using any of the
-   functions hash_clear(), hash_destroy(), hash_insert(),
-   hash_replace(), or hash_delete(), yields undefined behavior,
-   whether done in DESTRUCTOR or elsewhere. */
+/* hash의 원소를 모두 뺀다. list는 남긴다. */
 void
 hash_clear (struct hash *h, hash_action_func *destructor) {
 	size_t i;
@@ -67,16 +59,7 @@ hash_clear (struct hash *h, hash_action_func *destructor) {
 	h->elem_cnt = 0;
 }
 
-/* Destroys hash table H.
-
-   If DESTRUCTOR is non-null, then it is first called for each
-   element in the hash.  DESTRUCTOR may, if appropriate,
-   deallocate the memory used by the hash element.  However,
-   modifying hash table H while hash_clear() is running, using
-   any of the functions hash_clear(), hash_destroy(),
-   hash_insert(), hash_replace(), or hash_delete(), yields
-   undefined behavior, whether done in DESTRUCTOR or
-   elsewhere. */
+/* hash를 없앤다. */
 void
 hash_destroy (struct hash *h, hash_action_func *destructor) {
 	if (destructor != NULL)
@@ -84,10 +67,8 @@ hash_destroy (struct hash *h, hash_action_func *destructor) {
 	free (h->buckets);
 }
 
-/* Inserts NEW into hash table H and returns a null pointer, if
-   no equal element is already in the table.
-   If an equal element is already in the table, returns it
-   without inserting NEW. */
+/* hash에 같은 원소가 없으면 새로운 elem인 NEW를 넣고 NULL를 반환하고,
+   이미 있으면 기존 원소를 돌려준다. */
 struct hash_elem *
 hash_insert (struct hash *h, struct hash_elem *new) {
 	struct list *bucket = find_bucket (h, new);
@@ -101,8 +82,8 @@ hash_insert (struct hash *h, struct hash_elem *new) {
 	return old;
 }
 
-/* Inserts NEW into hash table H, replacing any equal element
-   already in the table, which is returned. */
+/* 새로운 elem NEW를 hash에 넣는다. 
+   hash에 같은 원소가 이미 있으면 그것을 빼고 NEW로 바꾸며 뺀 원소를 반환한다. */
 struct hash_elem *
 hash_replace (struct hash *h, struct hash_elem *new) {
 	struct list *bucket = find_bucket (h, new);
@@ -117,20 +98,13 @@ hash_replace (struct hash *h, struct hash_elem *new) {
 	return old;
 }
 
-/* Finds and returns an element equal to E in hash table H, or a
-   null pointer if no equal element exists in the table. */
+/* E와 같은 원소를 찾아 돌려준다. 없으면 NULL을 반환한다. */
 struct hash_elem *
 hash_find (struct hash *h, struct hash_elem *e) {
 	return find_elem (h, find_bucket (h, e), e);
 }
 
-/* Finds, removes, and returns an element equal to E in hash
-   table H.  Returns a null pointer if no equal element existed
-   in the table.
-
-   If the elements of the hash table are dynamically allocated,
-   or own resources that are, then it is the caller's
-   responsibility to deallocate them. */
+/* E와 같은 원소를 찾아 빼고 돌려준다. 없으면 NULL을 반환한다. */
 struct hash_elem *
 hash_delete (struct hash *h, struct hash_elem *e) {
 	struct hash_elem *found = find_elem (h, find_bucket (h, e), e);
@@ -276,15 +250,15 @@ hash_int (int i) {
 	return hash_bytes (&i, sizeof i);
 }
 
-/* Returns the bucket in H that E belongs in. */
+/* hash에서 elem이 속하는 list를 찾아서 반환한다. */
 static struct list *
 find_bucket (struct hash *h, struct hash_elem *e) {
 	size_t bucket_idx = h->hash (e, h->aux) & (h->bucket_cnt - 1);
 	return &h->buckets[bucket_idx];
 }
 
-/* Searches BUCKET in H for a hash element equal to E.  Returns
-   it if found or a null pointer otherwise. */
+/* hash의 list에서 elem과 같은 hash 원소를 찾는다.
+   찾으면 그것을 반환하고 없으면 NULL을 반환한다. */
 static struct hash_elem *
 find_elem (struct hash *h, struct list *bucket, struct hash_elem *e) {
 	struct list_elem *i;
