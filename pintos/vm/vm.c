@@ -133,14 +133,14 @@ vm_get_frame (void) {
 	void *kpage = palloc_get_page (PAL_USER);
 
 	if (kpage == NULL) {
-		PANIC ("TODO");
+		PANIC ("todo: no free frame in user pool");
 	}
 
 	frame = malloc (sizeof (struct frame));
 
 	if (frame == NULL) {
 		palloc_free_page (kpage);
-		PANIC ("PANIC");
+		PANIC ("malloc failed for struct frame");
 	}
 	
 	frame->kva = kpage;
