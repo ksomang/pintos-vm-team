@@ -3,7 +3,7 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
-
+#include "threads/vaddr.h"
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -62,10 +62,15 @@ err:
 
 /* Find VA from spt and return page. On error, return NULL. */
 struct page *
-spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
+spt_find_page (struct supplemental_page_table *spt, void *va) {
 	struct page *page = NULL;
-	/* TODO: Fill this function. */
-
+	struct page tmp_page; 
+	tmp_page.va = pg_round_down(va);
+	struct hash_elem *found_elemental = hash_find(&spt->pages, &tmp_page.hash_elem);
+	if(!found_elemental){
+		return NULL;
+	}
+	page = hash_entry(found_elemental, struct page, hash_elem);
 	return page;
 }
 
