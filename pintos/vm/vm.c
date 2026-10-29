@@ -79,8 +79,8 @@ bool
 spt_insert_page (struct supplemental_page_table *spt ,
 		struct page *page) {
 	int succ = false;
-	struct hash_elem *hash_insert_succ = hash_insert(&spt->pages, &page->hash_elem);
-	if(hash_insert_succ == NULL){
+	struct hash_elem *hash_insert_result = hash_insert(&spt->pages, &page->hash_elem);
+	if(hash_insert_result == NULL){
 		return succ = true;
 	}
 	return succ;
