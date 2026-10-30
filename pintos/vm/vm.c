@@ -6,6 +6,9 @@
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
 
+/* uninit page의 page_initializer와 같은 모양의 함수 타입. */
+typedef bool type_initializer_func (struct page *, enum vm_type, void *);
+
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -39,9 +42,25 @@ static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
 
-/* Create the pending page object with initializer. If you want to create a
- * page, do not create it directly and make it through this function or
- * `vm_alloc_page`. */
+/* type의 종류(VM_TYPE)에 맞는 page initializer를 돌려준다.
+   지원하지 않는 종류면 NULL. */
+static 
+type_initializer_func *initializer_for_type (enum vm_type type) {
+
+	if (VM_TYPE(type) == VM_ANON) {
+		return anon_initializer; 
+	}
+	else if (VM_TYPE(type) == VM_FILE) {
+		return file_backed_initializer;
+	}
+
+	return NULL;
+}
+
+/* upage에 uninit page 하나를 만들어 현재 스레드의 SPT에 넣는다.
+   첫 page fault 때 type에 맞는 initializer와 init(aux)가 불려 내용이 채워진다.
+   frame 할당, 내용 채우기, pml4 매핑은 여기서 하지 않는다.
+   성공하면 true, upage에 이미 page가 있거나 메모리가 부족하거나 지원하지 않는 type이거나 SPT 삽입에 실패하면 false를 반환한다. */
 bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
@@ -50,13 +69,31 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 
-	/* Check wheter the upage is already occupied or not. */
 	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: Create the page, fetch the initialier according to the VM type,
-		 * TODO: and then create "uninit" page struct by calling uninit_new. You
-		 * TODO: should modify the field after calling the uninit_new. */
+		struct page *page = malloc (sizeof (struct page));
 
-		/* TODO: Insert the page into the spt. */
+		if (page == NULL) {
+			goto err;
+		}
+
+		type_initializer_func *type_initializer = initializer_for_type (type);
+
+		if (type_initializer == NULL) {
+			free (page);
+			goto err;
+		}
+
+		uninit_new (page, upage, init, type, aux, type_initializer);
+
+		/* uninit_new는 writable을 0으로 초기화하므로 uninit_new가 호출되기 전에 대입하지 말아야 한다. */
+		page->writable = writable;
+
+		if (!spt_insert_page (spt, page)) {
+			free (page);
+			goto err;
+		}
+
+		return true;
 	}
 err:
 	return false;
@@ -203,7 +240,6 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 
-	/* TODO: rw는 vm_alloc_page_with_initializer 때 완성한다. */
 	if (!pml4_set_page (thread_current ()->pml4, page->va, frame->kva, page->writable)) {
 		palloc_free_page (frame->kva);
 		free (frame);
