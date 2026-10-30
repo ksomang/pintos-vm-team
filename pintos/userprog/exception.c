@@ -122,7 +122,7 @@ page_fault (struct intr_frame *f) {
 	user = (f->error_code & PF_U) != 0;
 
 #ifdef VM
-	/* For project 3 and later. */
+	/* project 3 이후용. */
 	if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
 		return;
 #endif
