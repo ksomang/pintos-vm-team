@@ -176,6 +176,8 @@ vm_claim_page (void *va) {
 }
 
 /* Claim the PAGE and set up the mmu. */
+/* TODO: swap_in 실패 시 정리 필요.
+ * pml4_clear_page -> palloc_free_page(frame->kva) -> free(frame) -> page->frame = NULL 순서로 메모리 해제. */
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
