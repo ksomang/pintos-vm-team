@@ -4,6 +4,7 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "threads/vaddr.h"
+#include "threads/mmu.h"
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -118,8 +119,16 @@ vm_evict_frame (void) {
 static struct frame *
 vm_get_frame (void) {
 	struct frame *frame = NULL;
-	/* TODO: Fill this function. */
-
+	void *physical_page = palloc_get_page(PAL_USER);
+	if(physical_page == NULL){
+		PANIC("todo_null_palloc");
+	}
+	frame = malloc(sizeof (struct frame));
+	if(frame == NULL){
+		PANIC("todo_null_malloc");
+	}
+	frame->kva = physical_page;
+	frame->page = NULL;
 	ASSERT (frame != NULL);
 	ASSERT (frame->page == NULL);
 	return frame;
@@ -157,10 +166,12 @@ vm_dealloc_page (struct page *page) {
 
 /* Claim the page that allocate on VA. */
 bool
-vm_claim_page (void *va UNUSED) {
+vm_claim_page (void *va) {
 	struct page *page = NULL;
-	/* TODO: Fill this function */
-
+	page = spt_find_page(&thread_current()->spt, va);
+	if(page == NULL){
+		return false;
+	}
 	return vm_do_claim_page (page);
 }
 
@@ -173,8 +184,13 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 
-	/* TODO: Insert page table entry to map page's VA to frame's PA. */
-
+	bool result = pml4_set_page(thread_current()->pml4, page->va,frame->kva, page->writable);
+	if(result==false){
+		palloc_free_page(frame->kva);
+		free(frame);
+		page->frame = NULL;
+		return false;
+	}
 	return swap_in (page, frame->kva);
 }
 
