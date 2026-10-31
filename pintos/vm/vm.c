@@ -52,6 +52,7 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 	bool (*initializer)(struct page *, enum vm_type, void *);
 	/* upage가 이미 사용 중인지 확인한다. */
 	if (spt_find_page (spt, upage) == NULL) {
+		/*마커를 떼고 진짜 타입으로 비교한다*/
 		switch(VM_TYPE(type)){
 			case VM_ANON:
 				initializer = anon_initializer;
@@ -59,16 +60,20 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 			case VM_FILE:
 				initializer = file_backed_initializer;
 				break;
+			/*ANON/FILE만 지원한다 (VM_PAGE_CACHE는 project 4)*/
 			default:
 				goto err;
 		}
-		
+		/* 실패할 수 있는 검사를 모두 끝낸 뒤에 할당한다.
+ 		 * 그래야 실패 경로들(err)에서 해제할 것이 없다. */
 		struct page *page= malloc(sizeof (struct page));
 		if(page == NULL)
 			goto err;
-		
+
 		uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
+		/* uninit_new가 *page 전체를 덮어쓰므로 writable은 반드시 호출 뒤에 설정한다. */
 		page->writable = writable;
+		/* err:는 page를 할당하기 전의 경로와 공유하므로, 해제는 여기서 한다. */
 		if(spt_insert_page(spt, page) == false){
 			free(page);
 			goto err;
