@@ -37,17 +37,17 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
-typedef bool page_initializer (struct page *, enum vm_type, void *kva);
+typedef bool page_type_initializer (struct page *, enum vm_type, void *kva);
 
-/*initializer 선택하기*/
-static page_initializer *
+/*지원하지 않는 type이면 NULL 반환*/
+static page_type_initializer *
 select_initializer (enum vm_type type){
 	switch(VM_TYPE(type)){
 		case VM_ANON:
 			return anon_initializer;
 		case VM_FILE:
 			return file_backed_initializer;
-		/*ANON/FILE만 지원한다 (VM_PAGE_CACHE는 project 4)*/
+		/*ANON,FILE 제외하고 나머지 타입일 경우*/
 		default:
 			return NULL;
 	}
@@ -56,12 +56,13 @@ select_initializer (enum vm_type type){
 /*uninit_new하기*/
 static struct page *
 create_uninit_page (void *upage, bool writable, enum vm_type type, 
-					vm_initializer *init, void *aux, page_initializer *initializer){
+					vm_initializer *init, void *aux, page_type_initializer *initializer){
 	struct page *page= malloc(sizeof (struct page));
 	if(page == NULL){
 		return NULL;
 	}	
 	uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
+	/* uninit_new가 *page 전체를 덮어쓰므로 writable은 반드시 uninit_new 호출 뒤에 설정한다. */
 	page->writable = writable;
 	return page;
 }
@@ -81,7 +82,7 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 	if(spt_find_page(spt, upage) != NULL){
 		return false;
 	}
-	page_initializer *selected_initializer = select_initializer(type);
+	page_type_initializer *selected_initializer = select_initializer(type);
 	if(selected_initializer == NULL){
 		return false;
 	}
