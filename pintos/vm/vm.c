@@ -5,6 +5,8 @@
 #include "vm/inspect.h"
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
+#include "userprog/process.h"
+#include <string.h>
 
 /* uninit page의 page_initializer와 같은 모양의 함수 타입. */
 typedef bool type_initializer_func (struct page *, enum vm_type, void *);
@@ -289,10 +291,77 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 	hash_init (&spt->page_hash, &page_va_hash, &page_va_less, NULL);
 }
 
-/* Copy supplemental page table from src to dst */
+/* 부모의 uninit page를 자식 SPT에 복사한다.
+   내용이 없으니 claim하지 않고 같은 init과 aux 내용을 가진 uninit page로 등록만 한다.
+   aux는 lazy_load_segment가 쓰고 나서 free하므로 부모와 같은 aux를 가리키면 두 번 free된다.
+   그래서 aux는 새로 malloc해 내용을 베낀 뒤 넘긴다.
+   메모리 할당이나 등록에 실패하면 false를 반환한다. */
+static bool
+duplicate_uninit_page (struct page *src_page) {
+	struct segment_aux_info *dst_aux = malloc (sizeof (struct segment_aux_info));
+	
+	if (dst_aux == NULL) {
+		return false;
+	}
+	
+	memcpy (dst_aux, src_page->uninit.aux, sizeof (struct segment_aux_info));
+	
+	if (!vm_alloc_page_with_initializer (page_get_type (src_page), src_page->va, src_page->writable, src_page->uninit.init, dst_aux)) {
+		free (dst_aux);
+		return false;
+	}
+
+	return true;
+}
+
+/* 부모의 anon page를 자식 SPT에 복사한다.
+   같은 주소에 page를 등록하고 바로 claim해 자식만의 새 frame을 붙인 뒤
+   부모 frame의 내용을 그대로 베낀다.
+   등록이나 claim에 실패하면 false를 반환한다. */
+static bool
+duplicate_anon_page (struct supplemental_page_table *dst, struct page *src_page) {
+	if (!vm_alloc_page_with_initializer (page_get_type (src_page), src_page->va, src_page->writable, NULL, NULL)) {
+		return false;
+	}
+	
+	if (!vm_claim_page (src_page->va)) {
+		return false;
+	}
+	
+	struct page *dst_page = spt_find_page (dst, src_page->va);
+	memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+
+	return true;
+}
+
+/* fork 때 부모의 SPT를 자식의 SPT로 복사한다.
+   자식 스레드가 부르므로 page 등록과 claim은 자식의 SPT와 page table에 들어간다.
+   page의 지금 상태(operations->type)에 따라 uninit이면 init과 aux만 복제해 uninit page로 등록하고 그 밖이면 내용까지 복사한다.
+   하나라도 실패하면 false를 반환한다. */
 bool
-supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
-		struct supplemental_page_table *src UNUSED) {
+supplemental_page_table_copy (struct supplemental_page_table *dst,
+		struct supplemental_page_table *src) {
+	struct hash_iterator i;
+
+	hash_first (&i, &src->page_hash);
+
+	while (hash_next (&i))
+	{
+		struct page *src_page = hash_entry (hash_cur (&i), struct page, elem);
+
+		if (src_page->operations->type == VM_UNINIT) {
+			if (!duplicate_uninit_page (src_page)) {
+				return false;
+			}
+		}
+		else {
+			if (!duplicate_anon_page (dst, src_page)) {
+				return false;
+			}
+		}
+	}
+
+	return true;
 }
 
 /* Free the resource hold by the supplemental page table */

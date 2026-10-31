@@ -133,7 +133,7 @@ duplicate_fd_table (struct thread *parent) {
    lazy loading 때문에 아직 매핑 안 된 page도 SPT에 있으면 올바른 주소로 본다. */
 static bool
 check_address (const void *addr) {
-	if (addr == NULL || !is_user_vaddr (addr) || spt_find_page(&thread_current ()->spt, addr) == NULL) {
+	if (addr == NULL || !is_user_vaddr (addr) || spt_find_page(&thread_current ()->spt, (void *)addr) == NULL) {
 		return false;
 	}
 	return true;

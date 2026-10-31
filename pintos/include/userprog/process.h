@@ -2,6 +2,14 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
+#include "filesys/file.h"
+
+struct segment_aux_info {
+	struct file *file;
+	off_t ofs;
+	uint32_t read_bytes;	/* page 하나만큼의 read_bytes. */
+	uint32_t zero_bytes;	/* page 하나만큼의 zero_bytes. */
+};
 
 tid_t process_create_initd (const char *file_name);   /* 첫 프로세스 */
 tid_t process_fork (const char *name, struct intr_frame *if_);

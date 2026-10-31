@@ -975,16 +975,6 @@ install_page (void *upage, void *kpage, bool writable) {
 			&& pml4_set_page (t->pml4, upage, kpage, writable));
 }
 #else
-/* From here, codes will be used after project 3.
- * If you want to implement the function for only project 2, implement it on the
- * upper block. */
-
-struct segment_aux_info {
-	struct file *file;
-	off_t ofs;
-	uint32_t read_bytes;	/* page 하나만큼의 read_bytes. */
-	uint32_t zero_bytes;	/* page 하나만큼의 zero_bytes. */
-};
 
 /* page 하나를 lazy loading 할 때 필요한 정보(file, ofs, 읽을 양, 0으로 채울 양)를
    담은 segment_aux_info를 만들어 돌려준다. 메모리가 부족하면 NULL을 반환한다. */
