@@ -1066,17 +1066,23 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 	return true;
 }
 
-/* Create a PAGE of stack at the USER_STACK. Return true on success. */
+/* USER_STACK 바로 아래(stack_bottom)에 stack page 하나를 만든다.
+   VM_MARKER_0으로 stack임을 표시해 SPT에 등록하고, push_arguments가 곧 쓰므로 fault를 기다리지 않고 바로 claim한다.
+   성공하면 rsp를 USER_STACK으로 맞추고 true를 등록이나 claim에 실패하면 false를 반환한다. */
 static bool
 setup_stack (struct intr_frame *if_) {
-	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
+	if (!vm_alloc_page_with_initializer (VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL)) {
+		return false;
+	}
 
-	return success;
+	if (!vm_claim_page (stack_bottom)) {
+		return false;
+	}
+
+	if_->rsp = USER_STACK;
+
+	return true;
 }
 #endif /* VM */
