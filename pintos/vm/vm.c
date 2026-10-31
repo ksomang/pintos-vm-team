@@ -49,13 +49,31 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 
+	bool (*initializer)(struct page *, enum vm_type, void *);
 	/* upage가 이미 사용 중인지 확인한다. */
 	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: 페이지를 만들고, VM 타입에 맞는 initializer를 가져온 뒤,
-		 * TODO: uninit_new를 호출해서 "uninit" 페이지 구조체를 만들어라.
-		 * TODO: 필드 수정은 uninit_new를 호출한 다음에 해야 한다. */
-
-		/* TODO: 페이지를 spt에 삽입하라. */
+		switch(VM_TYPE(type)){
+			case VM_ANON:
+				initializer = anon_initializer;
+				break;
+			case VM_FILE:
+				initializer = file_backed_initializer;
+				break;
+			default:
+				goto err;
+		}
+		
+		struct page *page= malloc(sizeof (struct page));
+		if(page == NULL)
+			goto err;
+		
+		uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
+		page->writable = writable;
+		if(spt_insert_page(spt, page) == false){
+			free(page);
+			goto err;
+		}
+		return true;
 	}
 err:
 	return false;
