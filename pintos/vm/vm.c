@@ -197,14 +197,24 @@ static bool
 vm_handle_wp (struct page *page UNUSED) {
 }
 
-/* Return true on success */
+/* page fault를 처리한다. 지금은 lazy loading으로 아직 안 올라온 page만 고친다.
+   읽기 전용 page에 쓰려 했거나(not_present가 false) SPT에 없는 주소면 false를 반환하고
+   SPT에 있으면 frame을 붙여 내용을 채운 뒤 그 결과를 반환한다. */
 bool
-vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
-		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
-	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
+vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr,
+		bool user UNUSED, bool write UNUSED, bool not_present) {
+	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page = NULL;
-	/* TODO: Validate the fault */
-	/* TODO: Your code goes here */
+
+	if (!not_present) {
+		return false;
+	}
+
+	page = spt_find_page (spt, addr);
+
+	if (page == NULL) {
+		return false;
+	}
 
 	return vm_do_claim_page (page);
 }

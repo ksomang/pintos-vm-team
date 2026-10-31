@@ -128,14 +128,12 @@ duplicate_fd_table (struct thread *parent) {
 	return true;
 }
 
-/* 사용자가 넘긴 주소 하나가 안전한지 검사한다.
-   NULL, 커널 주소, 매핑되지 않은 주소면 false를 돌려준다.
-   안전하면 true를 돌려준다.
-   TODO: Project 3에서 lazy loading이 들어가면 수정이 필요하다.
-         아직 안 올라온 페이지도 올바른 주소일 수 있다. */
+/* ADDR이 유저 프로그램이 넘겨도 되는 주소인지 검사한다.
+   NULL, 커널 주소, SPT에 없는 주소면 false를 돌려준다.
+   lazy loading 때문에 아직 매핑 안 된 page도 SPT에 있으면 올바른 주소로 본다. */
 static bool
 check_address (const void *addr) {
-	if (addr == NULL || !is_user_vaddr (addr) || pml4_get_page(thread_current ()->pml4, addr) == NULL) {
+	if (addr == NULL || !is_user_vaddr (addr) || spt_find_page(&thread_current ()->spt, addr) == NULL) {
 		return false;
 	}
 	return true;
