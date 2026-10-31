@@ -979,6 +979,31 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
+struct segment_aux_info {
+	struct file *file;
+	off_t ofs;
+	uint32_t read_bytes;	/* page 하나만큼의 read_bytes. */
+	uint32_t zero_bytes;	/* page 하나만큼의 zero_bytes. */
+};
+
+/* page 하나를 lazy loading 할 때 필요한 정보(file, ofs, 읽을 양, 0으로 채울 양)를
+   담은 segment_aux_info를 만들어 돌려준다. 메모리가 부족하면 NULL을 반환한다. */
+static struct segment_aux_info *
+create_segment_aux_info (struct file *file, off_t ofs, size_t page_read_bytes, size_t page_zero_bytes) {
+	struct segment_aux_info *segment_aux_info = malloc (sizeof (struct segment_aux_info));
+	
+	if (segment_aux_info == NULL) {
+		return NULL;
+	}
+	
+	segment_aux_info->file = file;
+	segment_aux_info->ofs = ofs;
+	segment_aux_info->read_bytes = page_read_bytes;
+	segment_aux_info->zero_bytes = page_zero_bytes;
+
+	return segment_aux_info;
+}
+
 static bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
@@ -986,20 +1011,6 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: VA is available when calling this function. */
 }
 
-/* Loads a segment starting at offset OFS in FILE at address
- * UPAGE.  In total, READ_BYTES + ZERO_BYTES bytes of virtual
- * memory are initialized, as follows:
- *
- * - READ_BYTES bytes at UPAGE must be read from FILE
- * starting at offset OFS.
- *
- * - ZERO_BYTES bytes at UPAGE + READ_BYTES must be zeroed.
- *
- * The pages initialized by this function must be writable by the
- * user process if WRITABLE is true, read-only otherwise.
- *
- * Return true if successful, false if a memory allocation error
- * or disk read error occurs. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
@@ -1008,21 +1019,27 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 	ASSERT (ofs % PGSIZE == 0);
 
 	while (read_bytes > 0 || zero_bytes > 0) {
-		/* Do calculate how to fill this page.
-		 * We will read PAGE_READ_BYTES bytes from FILE
-		 * and zero the final PAGE_ZERO_BYTES bytes. */
+		/* 이번 page를 어떻게 채울 것인지 계산한다.
+		   파일에서 page_read_bytes만큼 읽고 나머지 page_zero_bytes는 0으로 채운다. */
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
-			return false;
+		struct segment_aux_info *segment_aux_info = create_segment_aux_info (file, ofs, page_read_bytes, page_zero_bytes);
 
-		/* Advance. */
+		if (segment_aux_info == NULL) {
+			return false;
+		}
+
+		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
+					writable, lazy_load_segment, segment_aux_info)) {
+			free (segment_aux_info);
+			return false;
+		}
+
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
+		/* lazy loading은 page마다 읽는 시점이 달라서 파일 위치가 저절로 넘어가지 않으므로 page마다 읽을 ofs를 직접 늘린다. */
+		ofs += page_read_bytes;
 		upage += PGSIZE;
 	}
 	return true;
