@@ -990,6 +990,7 @@ struct segment_aux_info {
    담은 segment_aux_info를 만들어 돌려준다. 메모리가 부족하면 NULL을 반환한다. */
 static struct segment_aux_info *
 create_segment_aux_info (struct file *file, off_t ofs, size_t page_read_bytes, size_t page_zero_bytes) {
+	/* 할당 받은 aux는 lazy_load_segment가 page를 채운 뒤 free한다. */
 	struct segment_aux_info *segment_aux_info = malloc (sizeof (struct segment_aux_info));
 	
 	if (segment_aux_info == NULL) {
@@ -1004,13 +1005,31 @@ create_segment_aux_info (struct file *file, off_t ofs, size_t page_read_bytes, s
 	return segment_aux_info;
 }
 
+/* 첫 page fault 때 uninit_initialize가 부르는 initializer.
+   aux(segment_aux_info)에 담긴 위치에서 파일을 read_bytes만큼 page의 kva로 읽고 나머지 zero_bytes를 0으로 채운다. 
+   aux는 이후 쓰이지 않으므로 여기서 free한다. 파일을 다 읽지 못하면 false를 반환한다. */
 static bool
 lazy_load_segment (struct page *page, void *aux) {
-	/* TODO: Load the segment from the file */
-	/* TODO: This called when the first page fault occurs on address VA. */
-	/* TODO: VA is available when calling this function. */
+	struct segment_aux_info *segment_aux_info = aux;
+	void *kva = page->frame->kva;
+
+	off_t bytes_read = file_read_at (segment_aux_info->file, kva, segment_aux_info->read_bytes, segment_aux_info->ofs);
+
+	if (bytes_read < (int32_t) segment_aux_info->read_bytes) {
+		free (aux);
+		return false;
+	}
+
+	/* memset이 aux 값을 쓰므로 그 뒤에 free한다. */
+	memset (kva + segment_aux_info->read_bytes, 0, segment_aux_info->zero_bytes);
+	free (aux);
+
+	return true;
 }
 
+/* FILE의 OFS부터 시작하는 segment를 UPAGE부터 page 단위로 나눠 SPT에 uninit page로 등록한다.
+   page마다 읽을 위치와 크기를 segment_aux_info에 담아 넘기고, 실제 읽기는 첫 page fault 때 lazy_load_segment가 한다.
+   모든 page를 등록하면 true, 메모리 할당에 실패하면 false를 반환한다. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
@@ -1024,7 +1043,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		struct segment_aux_info *segment_aux_info = create_segment_aux_info (file, ofs, page_read_bytes, page_zero_bytes);
+		struct segment_aux_info *segment_aux_info = create_segment_aux_info (file, ofs, 
+																			 page_read_bytes, 
+																			 page_zero_bytes);
 
 		if (segment_aux_info == NULL) {
 			return false;
