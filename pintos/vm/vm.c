@@ -37,6 +37,35 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
+typedef bool page_initializer (struct page *, enum vm_type, void *kva);
+
+/*initializer 선택하기*/
+static page_initializer *
+select_initializer (enum vm_type type){
+	switch(VM_TYPE(type)){
+		case VM_ANON:
+			return anon_initializer;
+		case VM_FILE:
+			return file_backed_initializer;
+		/*ANON/FILE만 지원한다 (VM_PAGE_CACHE는 project 4)*/
+		default:
+			return NULL;
+	}
+}
+
+/*uninit_new하기*/
+static struct page *
+create_uninit_page (void *upage, bool writable, enum vm_type type, 
+					vm_initializer *init, void *aux, page_initializer *initializer){
+	struct page *page= malloc(sizeof (struct page));
+	if(page == NULL){
+		return NULL;
+	}	
+	uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
+	page->writable = writable;
+	return page;
+}
+
 
 /* initializer와 함께 대기 중인(pending) 페이지 객체를 만든다. 페이지를
  * 만들고 싶다면 직접 만들지 말고, 이 함수나 `vm_alloc_page`를 통해
@@ -49,40 +78,25 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 
-	bool (*initializer)(struct page *, enum vm_type, void *);
-	/* upage가 이미 사용 중인지 확인한다. */
-	if (spt_find_page (spt, upage) == NULL) {
-		/*마커를 떼고 진짜 타입으로 비교한다*/
-		switch(VM_TYPE(type)){
-			case VM_ANON:
-				initializer = anon_initializer;
-				break;
-			case VM_FILE:
-				initializer = file_backed_initializer;
-				break;
-			/*ANON/FILE만 지원한다 (VM_PAGE_CACHE는 project 4)*/
-			default:
-				goto err;
-		}
-		/* 실패할 수 있는 검사를 모두 끝낸 뒤에 할당한다.
- 		 * 그래야 실패 경로들(err)에서 해제할 것이 없다. */
-		struct page *page= malloc(sizeof (struct page));
-		if(page == NULL)
-			goto err;
-
-		uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
-		/* uninit_new가 *page 전체를 덮어쓰므로 writable은 반드시 호출 뒤에 설정한다. */
-		page->writable = writable;
-		/* err:는 page를 할당하기 전의 경로와 공유하므로, 해제는 여기서 한다. */
-		if(spt_insert_page(spt, page) == false){
-			free(page);
-			goto err;
-		}
-		return true;
+	if(spt_find_page(spt, upage) != NULL){
+		return false;
 	}
-err:
-	return false;
+	page_initializer *selected_initializer = select_initializer(type);
+	if(selected_initializer == NULL){
+		return false;
+	}
+	struct page *page= create_uninit_page(upage, writable, type, init, aux, selected_initializer);
+	if(page == NULL){
+		return false;
+	}
+	bool insert_succ = spt_insert_page(spt,page);
+	if(insert_succ == false){
+		free(page);
+		return false;
+	}
+	return true;
 }
+
 
 /* spt에서 VA를 찾아 페이지를 반환한다. 에러면 NULL을 반환한다. */
 struct page *
@@ -250,4 +264,48 @@ void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
 	/* TODO: 스레드가 가진 supplemental_page_table을 전부 파괴하고,
 	 * TODO: 수정된 내용은 모두 저장소에 다시 써라(writeback). */
+}
+
+
+bool
+vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
+		vm_initializer *init, void *aux) {
+
+	ASSERT (VM_TYPE(type) != VM_UNINIT)
+
+	struct supplemental_page_table *spt = &thread_current ()->spt;
+
+	bool (*initializer)(struct page *, enum vm_type, void *);
+	/* upage가 이미 사용 중인지 확인한다. */
+	if (spt_find_page (spt, upage) == NULL) {
+		/*마커를 떼고 진짜 타입으로 비교한다*/
+		switch(VM_TYPE(type)){
+			case VM_ANON:
+				initializer = anon_initializer;
+				break;
+			case VM_FILE:
+				initializer = file_backed_initializer;
+				break;
+			/*ANON/FILE만 지원한다 (VM_PAGE_CACHE는 project 4)*/
+			default:
+				goto err;
+		}
+		/* 실패할 수 있는 검사를 모두 끝낸 뒤에 할당한다.
+ 		 * 그래야 실패 경로들(err)에서 해제할 것이 없다. */
+		struct page *page= malloc(sizeof (struct page));
+		if(page == NULL)
+			goto err;
+
+		uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
+		/* uninit_new가 *page 전체를 덮어쓰므로 writable은 반드시 호출 뒤에 설정한다. */
+		page->writable = writable;
+		/* err:는 page를 할당하기 전의 경로와 공유하므로, 해제는 여기서 한다. */
+		if(spt_insert_page(spt, page) == false){
+			free(page);
+			goto err;
+		}
+		return true;
+	}
+err:
+	return false;
 }
