@@ -53,7 +53,7 @@ select_initializer (enum vm_type type){
 	}
 }
 
-/*uninit_new하기*/
+/*malloc이 실패하면 NULL을 반환함, 반환된 page는 아직 spt에 들어가지 않음*/
 static struct page *
 create_uninit_page (void *upage, bool writable, enum vm_type type, 
 					vm_initializer *init, void *aux, page_type_initializer *initializer){

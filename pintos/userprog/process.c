@@ -979,11 +979,41 @@ install_page (void *upage, void *kpage, bool writable) {
  * project 2에서만 쓸 함수를 구현하고 싶다면, 위쪽 블록에
  * 구현하라. */
 
+ /*aux 구조체 생성*/
+struct aux_info {
+	struct file *file_ptr;
+	off_t offset;
+	size_t read_bytes;
+	size_t zero_bytes;
+};
+
+static struct aux_info *
+create_aux_info(struct file *file, off_t ofs, size_t page_read_bytes,size_t page_zero_bytes){
+	struct aux_info *aux_info = malloc(sizeof (struct aux_info));
+	if (aux_info == NULL){
+		return NULL;
+	}
+	aux_info->file_ptr = file;
+	aux_info->offset= ofs;
+	aux_info->read_bytes= page_read_bytes;
+	aux_info->zero_bytes = page_zero_bytes;
+	
+	return aux_info;
+}
+
 static bool
 lazy_load_segment (struct page *page, void *aux) {
-	/* TODO: 파일에서 세그먼트를 로드하라 */
-	/* TODO: 이 함수는 주소 VA에서 첫 page fault가 일어났을 때 호출된다. */
-	/* TODO: 이 함수가 호출될 때 VA를 사용할 수 있다. */
+	/* aux에 담긴 정보로 파일을 읽어 프레임을 채우고, 남은 부분은 0으로 채운다 */
+	struct aux_info *aux_info = aux;
+	void *kva = page->frame->kva;
+	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes,aux_info->offset);
+	if(actual_read != (off_t) aux_info->read_bytes){
+		free(aux);
+		return false;
+	}
+	memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
+	free(aux);
+	return true;
 }
 
 /* FILE의 오프셋 OFS에서 시작하는 세그먼트를 주소 UPAGE에
@@ -1014,16 +1044,21 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* TODO: lazy_load_segment에 정보를 넘길 수 있도록 aux를 설정하라. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+		struct aux_info *aux = create_aux_info(file, ofs, page_read_bytes, page_zero_bytes);
+		if(aux == NULL){
 			return false;
+		}
 
-		/* 다음으로 진행. */
+		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
+					writable, lazy_load_segment, aux)){
+			free(aux);
+			return false;
+		}
+		/*ofs 갱신*/
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		ofs += page_read_bytes;
 	}
 	return true;
 }
