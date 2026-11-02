@@ -979,7 +979,9 @@ install_page (void *upage, void *kpage, bool writable) {
  * project 2에서만 쓸 함수를 구현하고 싶다면, 위쪽 블록에
  * 구현하라. */
 
- /*aux 구조체 생성*/
+ /*aux 구조체
+  *load_segment가 페이지마다 만들고, lazy_load_segment가 사용 후 해제한다.
+  *페이지 등록에 실패하면 load_segment가 해제한다.*/
 struct aux_info {
 	struct file *file_ptr;
 	off_t offset;
@@ -994,8 +996,8 @@ create_aux_info(struct file *file, off_t ofs, size_t page_read_bytes,size_t page
 		return NULL;
 	}
 	aux_info->file_ptr = file;
-	aux_info->offset= ofs;
-	aux_info->read_bytes= page_read_bytes;
+	aux_info->offset = ofs;
+	aux_info->read_bytes = page_read_bytes;
 	aux_info->zero_bytes = page_zero_bytes;
 	
 	return aux_info;
@@ -1007,13 +1009,12 @@ lazy_load_segment (struct page *page, void *aux) {
 	struct aux_info *aux_info = aux;
 	void *kva = page->frame->kva;
 	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes,aux_info->offset);
-	if(actual_read != (off_t) aux_info->read_bytes){
-		free(aux);
-		return false;
+	bool read_succ = (actual_read == (off_t) aux_info->read_bytes);
+	if(read_succ == true){
+		memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
 	}
-	memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
 	free(aux);
-	return true;
+	return read_succ;
 }
 
 /* FILE의 오프셋 OFS에서 시작하는 세그먼트를 주소 UPAGE에
@@ -1054,10 +1055,11 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 			free(aux);
 			return false;
 		}
-		/*ofs 갱신*/
+
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		/*ofs 갱신*/
 		ofs += page_read_bytes;
 	}
 	return true;
@@ -1066,14 +1068,21 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* USER_STACK에 스택 PAGE를 하나 만든다. 성공하면 true를 반환한다. */
 static bool
 setup_stack (struct intr_frame *if_) {
-	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: stack_bottom에 스택을 매핑하고 페이지를 즉시 claim하라.
-	 * TODO: 성공하면 rsp를 그에 맞게 설정하라.
-	 * TODO: 이 페이지가 스택이라는 표시를 해 두어야 한다. */
-	/* TODO: 여기에 코드를 작성하라 */
+	/*스택 표시(VM_MARKER_0)를 단 anon 페이지를 등록하고 즉시 claim한 뒤 rsp를 USER_STACK으로 둔다*/
+	bool spt_enroll_result = vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL);
+	if(!spt_enroll_result){
+		return false;
+	}
 
-	return success;
+	bool claim_result = vm_claim_page(stack_bottom);
+	if(!claim_result){
+		return false;
+	}
+	
+	if_->rsp = USER_STACK;
+
+	return true;
 }
 #endif /* VM */
