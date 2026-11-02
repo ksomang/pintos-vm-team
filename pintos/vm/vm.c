@@ -184,13 +184,28 @@ vm_handle_wp (struct page *page UNUSED) {
 
 /* 성공하면 true를 반환한다 */
 bool
-vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
-		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
+vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr,
+		bool user UNUSED, bool write , bool not_present ) {
 	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
 	struct page *page = NULL;
-	/* TODO: fault가 유효한지 검사하라 */
-	/* TODO: 여기에 코드를 작성하라 */
 
+	/*유저 영역 주소가 아니면 처리할 수 없다*/
+	if(addr == NULL || is_user_vaddr(addr) == false){
+		return false;
+	}
+	/*이미 매핑된 페이지의 권한 위반이다*/
+	if(not_present == false){
+		return false;
+	}
+	page = spt_find_page(spt, addr);
+	/*등록되지 않은 주소다*/
+	if(page == NULL){
+		return false;
+	}
+	/*읽기 전용 페이지에 쓰려는 접근*/
+	if(write == true && page->writable ==false){
+		return false;
+	}
 	return vm_do_claim_page (page);
 }
 

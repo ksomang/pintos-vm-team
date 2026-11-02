@@ -1008,7 +1008,13 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* aux에 담긴 정보로 파일을 읽어 프레임을 채우고, 남은 부분은 0으로 채운다 */
 	struct aux_info *aux_info = aux;
 	void *kva = page->frame->kva;
-	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes,aux_info->offset);
+	/* fault 중에 파일을 읽으므로 filesys_lock을 쥔다.
+	 * syscall이 이미 lock을 쥔 채 fault가 났을 수 있으니, 내가 잡았을 때만 푼다. */
+	bool acquired = filesys_lock_acquire_if_needed();
+	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes, aux_info->offset);
+	if(acquired){
+		lock_release(&filesys_lock);
+	}
 	bool read_succ = (actual_read == (off_t) aux_info->read_bytes);
 	if(read_succ == true){
 		memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
