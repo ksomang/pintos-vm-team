@@ -71,8 +71,7 @@ struct lock filesys_lock;
    같은 스레드가 lock을 다시 잡게 되고, lock_acquire의 ASSERT에 걸려 PANIC한다.
    그래서 이미 쥐고 있으면 다시 잡지 않는다.
 
-   반환값이 true일 때만 lock_release할 것.
-   내가 잡지 않은 lock을 풀면 바깥 syscall이 쥔 lock이 풀려 버린다. */
+   반환값은 filesys_lock_release_if_acquired에 그대로 넘겨서 푼다. */
 bool
 filesys_lock_acquire_if_needed (void) {
 	if (lock_held_by_current_thread (&filesys_lock)) {
@@ -80,6 +79,16 @@ filesys_lock_acquire_if_needed (void) {
 	}
 	lock_acquire (&filesys_lock);
 	return true;
+}
+
+/* filesys_lock_acquire_if_needed가 잡았을 때(ACQUIRED가 true)만 filesys_lock을 푼다.
+   내가 잡지 않은 lock을 풀면 바깥 syscall이 쥔 lock이 풀려 버리므로,
+   이미 쥐고 있어서 안 잡았던 경우(false)는 그대로 둔다. */
+void
+filesys_lock_release_if_acquired (bool acquired) {
+	if (acquired) {
+		lock_release (&filesys_lock);
+	}
 }
 
 void

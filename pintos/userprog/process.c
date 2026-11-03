@@ -1004,9 +1004,7 @@ lazy_load_segment (struct page *page, void *aux) {
 	 * syscall이 이미 lock을 쥔 채 fault가 났을 수 있으니, 내가 잡았을 때만 푼다. */
 	bool acquired = filesys_lock_acquire_if_needed();
 	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes, aux_info->offset);
-	if(acquired){
-		lock_release(&filesys_lock);
-	}
+	filesys_lock_release_if_acquired(acquired);
 	bool read_succ = (actual_read == (off_t) aux_info->read_bytes);
 	if(read_succ == true){
 		memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
