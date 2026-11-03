@@ -36,6 +36,8 @@ struct page_operations;
 struct thread;
 
 #define VM_TYPE(type) ((type) & 7)
+/* 스택 페이지 표시. setup_stack과 vm_stack_growth가 VM_ANON과 함께 붙인다. */
+#define VM_STACK VM_MARKER_0
 
 /* lazy loading으로 파일에서 읽어 올 페이지 하나의 정보 (uninit 페이지의 aux).
  * load_segment가 페이지마다 만들고, lazy_load_segment가 사용 후 해제한다.
@@ -124,4 +126,7 @@ void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
 
+/* ADDR이 RSP 기준으로 스택 접근처럼 보이면 true.
+   page fault 처리와 syscall 주소 검사가 같은 기준을 쓰도록 여기 선언한다. */
+bool is_stack_access (void *addr, uintptr_t rsp);
 #endif  /* VM_VM_H */

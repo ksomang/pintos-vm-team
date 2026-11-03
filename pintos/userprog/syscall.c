@@ -165,7 +165,10 @@ duplicate_fd_table (struct thread *parent) {
    안전하면 true를 돌려준다.
 
    VM에서는 SPT에 등록된 주소면 아직 안 올라왔어도 정상이다.
-   실제로 접근할 때 page fault로 올라온다. */
+   실제로 접근할 때 page fault로 올라온다.
+   SPT에 없어도 스택 접근(is_stack_access)이면 정상이다. 아직 커지지 않은 스택 버퍼를
+   syscall에 처음 넘기는 경우로, 페이지는 여기서 만들지 않고 커널이 접근할 때
+   page fault가 나서 vm_try_handle_fault가 만든다. */
 static bool
 check_address (const void *addr, bool write) {
 	if (addr == NULL || !is_user_vaddr (addr)) {
@@ -174,9 +177,11 @@ check_address (const void *addr, bool write) {
 #ifdef VM
 	struct page *page = spt_find_page (&thread_current ()->spt, (void *) addr);
 
-	/* SPT에 없으면 등록되지 않은 주소다. (스택 성장 판단은 나중에 여기 들어간다) */
+	/* SPT에 없으면 스택 접근일 때만 허용한다.
+	   커널 모드라 f->rsp를 쓸 수 없으므로 syscall_handler가 저장한 user_rsp로 판단한다.
+	   스택 페이지는 항상 writable이라 WRITE는 따로 검사하지 않는다. */
 	if (page == NULL) {
-		return false;
+		return is_stack_access ((void *) addr, thread_current ()->user_rsp);
 	}
 
 	/* 커널이 쓸 버퍼인데 읽기 전용 페이지면 안 된다. (예: 코드 영역에 read) */
@@ -199,11 +204,14 @@ check_buffer (const void *buffer, size_t size, bool write) {
 	if (size == 0)
 		return true;
 
-	uintptr_t start_page = (uintptr_t) pg_round_down (buffer);
 	uintptr_t end = (uintptr_t) buffer + size - 1;
 
-	for (uintptr_t page = start_page; page <= end; page += PGSIZE) {
-		if (!check_address ((const void *) page, write)) {
+	/* 첫 검사는 BUFFER 주소 그대로 하고, 그 다음부터 다음 페이지의 시작 주소로 넘어간다.
+	   첫 페이지를 pg_round_down해서 넘기면, rsp 바로 위에서 시작하는 스택 버퍼가
+	   rsp - 8보다 아래 주소로 검사되어 스택 접근이 아니라고 잘못 거부된다. (page-merge-stk)
+	   SPT 검사는 spt_find_page가 안에서 내려서 찾으므로 결과가 같다. */
+	for (uintptr_t cur = (uintptr_t) buffer; cur <= end; cur = (uintptr_t) pg_round_down (cur) + PGSIZE) {
+		if (!check_address ((const void *) cur, write)) {
 			return false;
 		}
 	}
@@ -514,6 +522,12 @@ sys_exec (const char *cmd_line) {
    결과를 f->R.rax에 넣으면 사용자가 반환값으로 받는다. */
 void
 syscall_handler (struct intr_frame *f) {
+#ifdef VM
+	/* syscall 처리 중 커널 모드에서 page fault가 나면 f->rsp가 커널 스택이라 스택 접근을 판단할 수 없다.
+	   그래서 유저 rsp가 정확히 들어 있는 지금 저장해 둔다. 어떤 syscall이든 주소 검사 전에 저장되도록 맨 앞에 둔다. */
+	thread_current ()->user_rsp = f->rsp;
+#endif
+
 	switch (f->R.rax) {
 		case SYS_HALT:
 			sys_halt ();

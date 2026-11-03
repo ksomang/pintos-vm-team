@@ -1066,8 +1066,8 @@ static bool
 setup_stack (struct intr_frame *if_) {
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/*스택 표시(VM_MARKER_0)를 단 anon 페이지를 등록하고 즉시 claim한 뒤 rsp를 USER_STACK으로 둔다*/
-	bool spt_enroll_result = vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL);
+	/*스택 표시(VM_STACK)를 단 anon 페이지를 등록하고 즉시 claim한 뒤 rsp를 USER_STACK으로 둔다*/
+	bool spt_enroll_result = vm_alloc_page_with_initializer(VM_ANON | VM_STACK, stack_bottom, true, NULL, NULL);
 	if(!spt_enroll_result){
 		return false;
 	}
