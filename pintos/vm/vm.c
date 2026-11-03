@@ -5,6 +5,7 @@
 #include "vm/inspect.h"
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
+#include <string.h>
 /* 각 하위 시스템의 초기화 코드를 호출해서
  * 가상 메모리 하위 시스템을 초기화한다. */
 void
@@ -269,15 +270,80 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 	hash_init(&spt->pages, page_hash, page_less, NULL);
 }
 
-/* 보조 페이지 테이블을 src에서 dst로 복사한다 */
+/* 보조 페이지 테이블을 src에서 dst로 복사한다.
+ * fork 때 자식 스레드의 __do_fork에서 불린다. dst는 자식(현재 스레드)의 SPT, src는 부모의 SPT다.
+ * 부모는 fork_sema에서 기다리고 있으므로 복사하는 동안 src는 바뀌지 않는다.
+ * 실패하면 false를 돌려준다. 반쯤 만든 dst는 __do_fork의 error 경로에서
+ * process_cleanup -> supplemental_page_table_kill이 정리하므로 여기서 따로 지우지 않는다. */
 bool
-supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
-		struct supplemental_page_table *src UNUSED) {
+supplemental_page_table_copy (struct supplemental_page_table *dst,
+		struct supplemental_page_table *src) {
+	/* vm_alloc_page, vm_claim_page는 현재 스레드의 SPT에 작용하므로 dst가 현재 스레드 것이어야 한다. */
+	ASSERT (dst == &thread_current ()->spt);
+
+	struct hash_iterator i;
+	hash_first(&i, &src->pages);
+	while(hash_next(&i)){
+		struct page *src_page = hash_entry(hash_cur(&i), struct page, hash_elem);
+		void *va = src_page->va;
+		bool writable = src_page->writable;
+
+		/* 지금 상태로 나눈다. page_get_type은 uninit이어도 나중 타입(VM_ANON 등)을 돌려주므로
+		 * 아직 안 올라온 페이지인지는 operations->type으로 판별한다. */
+		if(VM_TYPE(src_page->operations->type) == VM_UNINIT){
+			/* 1. 아직 안 올라온 페이지: 부모와 같은 lazy loading 정보로 자식 페이지를 등록한다.
+			 * aux는 페이지마다 따로 해제되므로(lazy_load_segment, uninit_destroy)
+			 * 부모 것을 그대로 넘기면 이중 해제가 난다. 그래서 자식용 복사본을 만든다.
+			 * aux가 NULL인 페이지(init 없이 등록된 anon 페이지)는 복사할 것이 없으니 NULL 그대로 넘긴다. */
+			struct aux_info *aux_copy = NULL;
+			if(src_page->uninit.aux != NULL){
+				aux_copy = malloc(sizeof(struct aux_info));
+				if(aux_copy == NULL){
+					return false;
+				}
+				memcpy(aux_copy, src_page->uninit.aux, sizeof (struct aux_info));
+			}
+			/* operations->type은 VM_UNINIT이라 ASSERT에 걸리므로 원래 타입(마커 포함)인 uninit.type을 넘긴다.
+			 * 등록에 실패하면 aux_copy를 가진 페이지가 없으니 여기서 해제한다. */
+			if(!vm_alloc_page_with_initializer(src_page->uninit.type, src_page->va, src_page->writable, src_page->uninit.init, aux_copy)){
+				free(aux_copy);
+				return false;
+			}
+
+			/* aux의 파일은 부모의 실행 파일(running_file)이라 부모가 종료하면 닫힌다.
+			 * 그래서 부모가 기다리고 있는 지금 바로 claim해서 내용을 읽어 둔다.
+			 * 등록에 성공한 뒤로 aux_copy는 페이지 소유이므로 claim이 실패해도 여기서 해제하지 않는다.
+			 * (lazy_load_segment가 이미 해제했거나, uninit으로 남은 페이지는 kill이 해제한다) */
+			if(!vm_claim_page(va)){
+				return false;
+			}
+		}
+		else{
+			/* 2. 이미 올라온 페이지: 부모가 실행하면서 바꾼 내용이 있으므로 파일에서 다시 읽지 않고
+			 * 새 프레임을 받아 부모 프레임 내용을 그대로 복사한다. */
+			if(!vm_alloc_page(page_get_type (src_page), va, writable)){
+				return false;
+			}
+			if(!vm_claim_page(va)){
+				return false;
+			}
+			/* claim 중에 anon_initializer가 프레임을 0으로 채우므로 복사는 반드시 claim 다음에 한다.
+			 * kva는 커널 주소라서 지금 켜진 pml4(자식)와 상관없이 부모 프레임을 읽을 수 있다. */
+			struct page *dst_page = spt_find_page (dst, va);
+			memcpy(dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+		}
+	}
+	return true;
+}
+
+static void
+destructor(struct hash_elem *e, void *aux UNUSED){
+	struct page *destroy_elem = hash_entry(e, struct page, hash_elem);
+	vm_dealloc_page(destroy_elem);
 }
 
 /* 보조 페이지 테이블이 가진 자원을 해제한다 */
 void
-supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
-	/* TODO: 스레드가 가진 supplemental_page_table을 전부 파괴하고,
-	 * TODO: 수정된 내용은 모두 저장소에 다시 써라(writeback). */
+supplemental_page_table_kill (struct supplemental_page_table *spt) {
+	hash_clear(&spt->pages, destructor);
 }

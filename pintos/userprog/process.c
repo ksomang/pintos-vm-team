@@ -979,16 +979,6 @@ install_page (void *upage, void *kpage, bool writable) {
  * project 2에서만 쓸 함수를 구현하고 싶다면, 위쪽 블록에
  * 구현하라. */
 
- /*aux 구조체
-  *load_segment가 페이지마다 만들고, lazy_load_segment가 사용 후 해제한다.
-  *페이지 등록에 실패하면 load_segment가 해제한다.*/
-struct aux_info {
-	struct file *file_ptr;
-	off_t offset;
-	size_t read_bytes;
-	size_t zero_bytes;
-};
-
 static struct aux_info *
 create_aux_info(struct file *file, off_t ofs, size_t page_read_bytes,size_t page_zero_bytes){
 	struct aux_info *aux_info = malloc(sizeof (struct aux_info));
