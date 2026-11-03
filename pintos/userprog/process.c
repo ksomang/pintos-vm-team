@@ -406,6 +406,20 @@ __do_fork (void *aux) {
 		goto error;
 
 	process_activate (current);
+
+	/* 자식도 같은 프로그램을 실행하므로, 실행 파일을 복제해 쓰기 막기를 하나 더 건다.
+	   SPT copy가 아직 안 올라온 페이지의 aux 파일을 이 running_file로 바꾸므로 copy보다 먼저 복제한다.
+	   실패 검사는 lock을 푼 다음에 한다. error 뒤 process_exit의 정리 과정이 같은 lock을 또 잡는다. */
+	if (parent->running_file != NULL) {
+		lock_acquire (&filesys_lock);
+		current->running_file = file_duplicate (parent->running_file);
+		lock_release (&filesys_lock);
+
+		if (current->running_file == NULL) {
+			goto error;
+		}
+	}
+
 #ifdef VM
 	supplemental_page_table_init (&current->spt);
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
@@ -420,18 +434,6 @@ __do_fork (void *aux) {
 
 	if (!duplicate_fd_table (parent)) {
 		goto error;
-	}
-
-	/* 자식도 같은 프로그램을 실행하므로, 실행 파일을 복제해 쓰기 막기를 하나 더 건다.
-	   실패 검사는 lock을 푼 다음에 한다. error 뒤에 destroy_fd_table이 같은 lock을 또 잡는다. */
-	if (parent->running_file != NULL) {
-		lock_acquire (&filesys_lock);
-		current->running_file = file_duplicate (parent->running_file);
-		lock_release (&filesys_lock);
-
-		if (current->running_file == NULL) {
-			goto error;
-		}
 	}
 
 	info->fork_success = true;
@@ -979,16 +981,6 @@ install_page (void *upage, void *kpage, bool writable) {
  * project 2에서만 쓸 함수를 구현하고 싶다면, 위쪽 블록에
  * 구현하라. */
 
- /*aux 구조체
-  *load_segment가 페이지마다 만들고, lazy_load_segment가 사용 후 해제한다.
-  *페이지 등록에 실패하면 load_segment가 해제한다.*/
-struct aux_info {
-	struct file *file_ptr;
-	off_t offset;
-	size_t read_bytes;
-	size_t zero_bytes;
-};
-
 static struct aux_info *
 create_aux_info(struct file *file, off_t ofs, size_t page_read_bytes,size_t page_zero_bytes){
 	struct aux_info *aux_info = malloc(sizeof (struct aux_info));
@@ -1012,9 +1004,7 @@ lazy_load_segment (struct page *page, void *aux) {
 	 * syscall이 이미 lock을 쥔 채 fault가 났을 수 있으니, 내가 잡았을 때만 푼다. */
 	bool acquired = filesys_lock_acquire_if_needed();
 	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes, aux_info->offset);
-	if(acquired){
-		lock_release(&filesys_lock);
-	}
+	filesys_lock_release_if_acquired(acquired);
 	bool read_succ = (actual_read == (off_t) aux_info->read_bytes);
 	if(read_succ == true){
 		memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
