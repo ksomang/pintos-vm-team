@@ -40,7 +40,7 @@ struct thread;
 /* lazy loading으로 파일에서 읽어 올 페이지 하나의 정보 (uninit 페이지의 aux).
  * load_segment가 페이지마다 만들고, lazy_load_segment가 사용 후 해제한다.
  * 페이지 등록에 실패하면 load_segment가 해제한다.
- * fork 때는 supplemental_page_table_copy가 자식용 복사본을 따로 만든다.
+ * fork 때는 supplemental_page_table_copy가 자식용 복사본을 따로 만들고, 파일은 자식의 running_file로 바꾼다.
  * 한 번도 fault가 나지 않은 채 종료하면 uninit_destroy가 해제한다. */
 struct aux_info {
 	struct file *file_ptr;

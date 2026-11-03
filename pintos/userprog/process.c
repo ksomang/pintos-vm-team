@@ -406,6 +406,20 @@ __do_fork (void *aux) {
 		goto error;
 
 	process_activate (current);
+
+	/* 자식도 같은 프로그램을 실행하므로, 실행 파일을 복제해 쓰기 막기를 하나 더 건다.
+	   SPT copy가 아직 안 올라온 페이지의 aux 파일을 이 running_file로 바꾸므로 copy보다 먼저 복제한다.
+	   실패 검사는 lock을 푼 다음에 한다. error 뒤 process_exit의 정리 과정이 같은 lock을 또 잡는다. */
+	if (parent->running_file != NULL) {
+		lock_acquire (&filesys_lock);
+		current->running_file = file_duplicate (parent->running_file);
+		lock_release (&filesys_lock);
+
+		if (current->running_file == NULL) {
+			goto error;
+		}
+	}
+
 #ifdef VM
 	supplemental_page_table_init (&current->spt);
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
@@ -420,18 +434,6 @@ __do_fork (void *aux) {
 
 	if (!duplicate_fd_table (parent)) {
 		goto error;
-	}
-
-	/* 자식도 같은 프로그램을 실행하므로, 실행 파일을 복제해 쓰기 막기를 하나 더 건다.
-	   실패 검사는 lock을 푼 다음에 한다. error 뒤에 destroy_fd_table이 같은 lock을 또 잡는다. */
-	if (parent->running_file != NULL) {
-		lock_acquire (&filesys_lock);
-		current->running_file = file_duplicate (parent->running_file);
-		lock_release (&filesys_lock);
-
-		if (current->running_file == NULL) {
-			goto error;
-		}
 	}
 
 	info->fork_success = true;

@@ -302,19 +302,13 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
 					return false;
 				}
 				memcpy(aux_copy, src_page->uninit.aux, sizeof (struct aux_info));
+				aux_copy->file_ptr = thread_current ()->running_file;
 			}
 			/* operations->type은 VM_UNINIT이라 ASSERT에 걸리므로 원래 타입(마커 포함)인 uninit.type을 넘긴다.
-			 * 등록에 실패하면 aux_copy를 가진 페이지가 없으니 여기서 해제한다. */
+			 * 등록에 실패하면 aux_copy를 가진 페이지가 없으니 여기서 해제한다.
+			 * 등록에 성공하면 claim하지 않고 uninit 그대로 둔다. 자식이 실제로 접근할 때 lazy load된다. */
 			if(!vm_alloc_page_with_initializer(src_page->uninit.type, src_page->va, src_page->writable, src_page->uninit.init, aux_copy)){
 				free(aux_copy);
-				return false;
-			}
-
-			/* aux의 파일은 부모의 실행 파일(running_file)이라 부모가 종료하면 닫힌다.
-			 * 그래서 부모가 기다리고 있는 지금 바로 claim해서 내용을 읽어 둔다.
-			 * 등록에 성공한 뒤로 aux_copy는 페이지 소유이므로 claim이 실패해도 여기서 해제하지 않는다.
-			 * (lazy_load_segment가 이미 해제했거나, uninit으로 남은 페이지는 kill이 해제한다) */
-			if(!vm_claim_page(va)){
 				return false;
 			}
 		}
