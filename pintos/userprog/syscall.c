@@ -22,10 +22,13 @@
 #include "filesys/file.h"
 #include "threads/palloc.h"
 #include "devices/input.h"
+#ifdef VM
+#include "vm/vm.h"
+#endif
 
 void syscall_entry (void);
-static bool check_address (const void *addr);
-static bool check_buffer (const void *buffer, size_t size);
+static bool check_address (const void *addr, bool write);
+static bool check_buffer (const void *buffer, size_t size, bool write);
 static bool check_string (const char *str);
 static void sys_halt (void);
 static int sys_read (int fd, void *buffer, unsigned length);
@@ -59,6 +62,25 @@ void syscall_handler (struct intr_frame *);
    파일 시스템 함수 호출을 감싸는 전역 lock.
    process.c(load 등)에서도 같은 lock을 써야 해서 static이 아니다. */
 struct lock filesys_lock;
+
+/* filesys_lock을 아직 안 쥐고 있을 때만 잡는다.
+   이번 호출에서 잡았으면 true, 이미 쥐고 있어서 안 잡았으면 false를 돌려준다.
+
+   page fault 처리 중(lazy load)에 파일을 읽을 때 쓴다.
+   syscall이 filesys_lock을 쥔 채 사용자 메모리를 건드리다 fault가 나면
+   같은 스레드가 lock을 다시 잡게 되고, lock_acquire의 ASSERT에 걸려 PANIC한다.
+   그래서 이미 쥐고 있으면 다시 잡지 않는다.
+
+   반환값이 true일 때만 lock_release할 것.
+   내가 잡지 않은 lock을 풀면 바깥 syscall이 쥔 lock이 풀려 버린다. */
+bool
+filesys_lock_acquire_if_needed (void) {
+	if (lock_held_by_current_thread (&filesys_lock)) {
+		return false;
+	}
+	lock_acquire (&filesys_lock);
+	return true;
+}
 
 void
 syscall_init (void) {
@@ -129,22 +151,42 @@ duplicate_fd_table (struct thread *parent) {
 }
 
 /* 사용자가 넘긴 주소 하나가 안전한지 검사한다.
-   NULL, 커널 주소, 매핑되지 않은 주소면 false를 돌려준다.
+   NULL, 커널 주소, 등록되지 않은 주소면 false를 돌려준다.
+   WRITE가 true면 커널이 이 주소에 쓸 예정이므로, 읽기 전용 페이지도 false다.
    안전하면 true를 돌려준다.
-   TODO: Project 3에서 lazy loading이 들어가면 수정이 필요하다.
-         아직 안 올라온 페이지도 올바른 주소일 수 있다. */
+
+   VM에서는 SPT에 등록된 주소면 아직 안 올라왔어도 정상이다.
+   실제로 접근할 때 page fault로 올라온다. */
 static bool
-check_address (const void *addr) {
-	if (addr == NULL || !is_user_vaddr (addr) || pml4_get_page(thread_current ()->pml4, addr) == NULL) {
+check_address (const void *addr, bool write) {
+	if (addr == NULL || !is_user_vaddr (addr)) {
+		return false;
+	}
+#ifdef VM
+	struct page *page = spt_find_page (&thread_current ()->spt, (void *) addr);
+
+	/* SPT에 없으면 등록되지 않은 주소다. (스택 성장 판단은 나중에 여기 들어간다) */
+	if (page == NULL) {
+		return false;
+	}
+
+	/* 커널이 쓸 버퍼인데 읽기 전용 페이지면 안 된다. (예: 코드 영역에 read) */
+	if (write && !page->writable) {
 		return false;
 	}
 	return true;
+#else
+	/* Project 2에는 lazy loading이 없으니 매핑돼 있으면 안전하다. */
+	(void) write;
+	return pml4_get_page (thread_current ()->pml4, addr) != NULL;
+#endif
 }
 
 /* BUFFER부터 SIZE바이트가 걸친 모든 페이지를 페이지마다 한 번씩 검사한다.
-   첫 바이트만 보면 버퍼가 다음 페이지로 넘어가는 경우를 놓친다. */
+   첫 바이트만 보면 버퍼가 다음 페이지로 넘어가는 경우를 놓친다.
+   WRITE가 true면 커널이 이 버퍼에 쓸 예정이다. (read는 true, write는 false) */
 static bool
-check_buffer (const void *buffer, size_t size) {
+check_buffer (const void *buffer, size_t size, bool write) {
 	if (size == 0)
 		return true;
 
@@ -152,7 +194,7 @@ check_buffer (const void *buffer, size_t size) {
 	uintptr_t end = (uintptr_t) buffer + size - 1;
 
 	for (uintptr_t page = start_page; page <= end; page += PGSIZE) {
-		if (!check_address ((const void *) page)) {
+		if (!check_address ((const void *) page, write)) {
 			return false;
 		}
 	}
@@ -239,14 +281,15 @@ fd_to_file (int fd) {
 	return fd_table[fd];
 }
 
-/* 문자열 STR을 '\0'까지 따라가며, 첫 글자와 새 페이지에 들어설 때마다 검사한다. */
+/* 문자열 STR을 '\0'까지 따라가며, 첫 글자와 새 페이지에 들어설 때마다 검사한다.
+   문자열은 읽기만 하므로 WRITE는 false다. */
 static bool
 check_string (const char *str) {
 	const char *p = str;
 
 	while (true) {
 		if (p == str || pg_ofs (p) == 0) {
-			if (!check_address (p)) {
+			if (!check_address (p, false)) {
 				return false;
 			}
 		}
@@ -270,7 +313,8 @@ sys_halt (void) {
    버퍼가 잘못된 주소면 프로세스를 exit(-1)로 끝낸다. */
 static int
 sys_read (int fd, void *buffer, unsigned length) {
-	if (!check_buffer (buffer, length)) {
+	/* 파일 내용을 버퍼에 쓰므로 쓰기 가능한지까지 검사한다. */
+	if (!check_buffer (buffer, length, true)) {
 		sys_exit (-1);
 	}
 
@@ -298,7 +342,8 @@ sys_read (int fd, void *buffer, unsigned length) {
    버퍼가 잘못된 주소면 프로세스를 exit(-1)로 끝낸다. */
 static int
 sys_write (int fd, const void *buffer, unsigned length) {
-	if (!check_buffer (buffer, length)) {
+	/* 버퍼는 읽기만 하므로 읽기 전용 페이지여도 된다. */
+	if (!check_buffer (buffer, length, false)) {
 		sys_exit (-1);
 	}
 

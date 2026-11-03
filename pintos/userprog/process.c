@@ -979,11 +979,48 @@ install_page (void *upage, void *kpage, bool writable) {
  * project 2에서만 쓸 함수를 구현하고 싶다면, 위쪽 블록에
  * 구현하라. */
 
+ /*aux 구조체
+  *load_segment가 페이지마다 만들고, lazy_load_segment가 사용 후 해제한다.
+  *페이지 등록에 실패하면 load_segment가 해제한다.*/
+struct aux_info {
+	struct file *file_ptr;
+	off_t offset;
+	size_t read_bytes;
+	size_t zero_bytes;
+};
+
+static struct aux_info *
+create_aux_info(struct file *file, off_t ofs, size_t page_read_bytes,size_t page_zero_bytes){
+	struct aux_info *aux_info = malloc(sizeof (struct aux_info));
+	if (aux_info == NULL){
+		return NULL;
+	}
+	aux_info->file_ptr = file;
+	aux_info->offset = ofs;
+	aux_info->read_bytes = page_read_bytes;
+	aux_info->zero_bytes = page_zero_bytes;
+	
+	return aux_info;
+}
+
 static bool
 lazy_load_segment (struct page *page, void *aux) {
-	/* TODO: 파일에서 세그먼트를 로드하라 */
-	/* TODO: 이 함수는 주소 VA에서 첫 page fault가 일어났을 때 호출된다. */
-	/* TODO: 이 함수가 호출될 때 VA를 사용할 수 있다. */
+	/* aux에 담긴 정보로 파일을 읽어 프레임을 채우고, 남은 부분은 0으로 채운다 */
+	struct aux_info *aux_info = aux;
+	void *kva = page->frame->kva;
+	/* fault 중에 파일을 읽으므로 filesys_lock을 쥔다.
+	 * syscall이 이미 lock을 쥔 채 fault가 났을 수 있으니, 내가 잡았을 때만 푼다. */
+	bool acquired = filesys_lock_acquire_if_needed();
+	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes, aux_info->offset);
+	if(acquired){
+		lock_release(&filesys_lock);
+	}
+	bool read_succ = (actual_read == (off_t) aux_info->read_bytes);
+	if(read_succ == true){
+		memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
+	}
+	free(aux);
+	return read_succ;
 }
 
 /* FILE의 오프셋 OFS에서 시작하는 세그먼트를 주소 UPAGE에
@@ -1014,16 +1051,22 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* TODO: lazy_load_segment에 정보를 넘길 수 있도록 aux를 설정하라. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+		struct aux_info *aux = create_aux_info(file, ofs, page_read_bytes, page_zero_bytes);
+		if(aux == NULL){
 			return false;
+		}
 
-		/* 다음으로 진행. */
+		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
+					writable, lazy_load_segment, aux)){
+			free(aux);
+			return false;
+		}
+
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		/*ofs 갱신*/
+		ofs += page_read_bytes;
 	}
 	return true;
 }
@@ -1031,14 +1074,21 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* USER_STACK에 스택 PAGE를 하나 만든다. 성공하면 true를 반환한다. */
 static bool
 setup_stack (struct intr_frame *if_) {
-	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: stack_bottom에 스택을 매핑하고 페이지를 즉시 claim하라.
-	 * TODO: 성공하면 rsp를 그에 맞게 설정하라.
-	 * TODO: 이 페이지가 스택이라는 표시를 해 두어야 한다. */
-	/* TODO: 여기에 코드를 작성하라 */
+	/*스택 표시(VM_MARKER_0)를 단 anon 페이지를 등록하고 즉시 claim한 뒤 rsp를 USER_STACK으로 둔다*/
+	bool spt_enroll_result = vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL);
+	if(!spt_enroll_result){
+		return false;
+	}
 
-	return success;
+	bool claim_result = vm_claim_page(stack_bottom);
+	if(!claim_result){
+		return false;
+	}
+	
+	if_->rsp = USER_STACK;
+
+	return true;
 }
 #endif /* VM */
