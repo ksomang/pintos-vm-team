@@ -6,6 +6,11 @@
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
 #include <string.h>
+/* 유저 스택이 커질 수 있는 최대 크기. 과제 기준 1MB. */
+#define STACK_MAX (1 << 20)
+/* x86-64의 PUSH가 rsp를 줄이기 전에 rsp 아래에서 건드리는 크기. */
+#define PUSH_ACCESS_SIZE 8
+
 /* 각 하위 시스템의 초기화 코드를 호출해서
  * 가상 메모리 하위 시스템을 초기화한다. */
 void
@@ -173,9 +178,30 @@ vm_get_frame (void) {
 	return frame;
 }
 
-/* 스택을 키운다. */
-static void
-vm_stack_growth (void *addr UNUSED) {
+/* ADDR이 RSP 기준으로 스택 접근처럼 보이면 true를 반환한다. 세 조건을 모두 만족해야 한다.
+ * - RSP - PUSH_ACCESS_SIZE 이상: 정상적인 스택 접근은 rsp 위에서 일어난다.
+ *   단 PUSH는 rsp를 줄이기 전에 그 아래를 먼저 건드리므로 그만큼은 허용한다.
+ *   그보다 더 아래(예: rsp - 4096)는 잘못된 접근으로 본다. (pt-grow-bad)
+ * - USER_STACK 미만: 유저 스택 영역 안이어야 한다.
+ * - USER_STACK - STACK_MAX 이상: 스택은 최대 1MB까지만 커질 수 있다.
+ * vm_try_handle_fault와 check_address가 같은 기준을 쓰도록 이 함수 하나를 공유한다. */
+bool
+is_stack_access(void *addr, uintptr_t rsp){
+	if((uintptr_t) addr >= rsp - PUSH_ACCESS_SIZE && (uintptr_t) addr < USER_STACK && (uintptr_t) addr >= USER_STACK - STACK_MAX){
+		return true;
+	}
+	return false;
+}
+
+/* 스택을 키운다. ADDR이 들어 있는 페이지를 스택 페이지(VM_ANON | VM_STACK)로 SPT에 등록만 한다.
+ * 스택 접근인지는 호출하는 쪽(vm_try_handle_fault)이 미리 판단하고,
+ * claim도 그쪽의 원래 흐름(vm_do_claim_page)이 한다. claim 때 anon_initializer가 0으로 채운다.
+ * SPT는 페이지 경계 주소로 관리하므로 ADDR을 내려서 등록한다.
+ * 등록에 실패하면 false를 반환한다. */
+static bool
+vm_stack_growth (void *addr) {
+	addr = pg_round_down(addr);
+	return vm_alloc_page (VM_ANON | VM_STACK, addr, true);
 }
 
 /* 쓰기 보호된(write_protected) 페이지에서 난 fault를 처리한다 */
@@ -183,11 +209,15 @@ static bool
 vm_handle_wp (struct page *page UNUSED) {
 }
 
-/* 성공하면 true를 반환한다 */
+/* page fault를 처리한다. 성공하면 true를 반환한다.
+ * - SPT에 있는 페이지면 프레임을 붙여 내용을 채운다. (lazy loading)
+ * - SPT에 없지만 스택 접근이면 스택 페이지를 새로 만들어 같은 방식으로 올린다. (stack growth)
+ * 커널 주소, 이미 올라온 페이지의 권한 위반, 스택이 아닌 미등록 주소,
+ * 읽기 전용 페이지에 쓰기는 처리할 수 없으므로 false를 반환한다. */
 bool
-vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr,
-		bool user UNUSED, bool write , bool not_present ) {
-	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
+vm_try_handle_fault (struct intr_frame *f, void *addr,
+		bool user, bool write , bool not_present ) {
+	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page = NULL;
 
 	/*유저 영역 주소가 아니면 처리할 수 없다*/
@@ -199,9 +229,19 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr,
 		return false;
 	}
 	page = spt_find_page(spt, addr);
-	/*등록되지 않은 주소다*/
+	/*SPT에 없는 주소면 스택 접근일 때만 새 스택 페이지를 만들고, 아니면 처리할 수 없다.
+	 *유저 모드 fault는 f->rsp가 유저 rsp지만, 커널 모드 fault(syscall 중 유저 버퍼 접근)는
+	 *f->rsp가 커널 스택이라 syscall_handler가 저장해 둔 user_rsp를 쓴다.
+	 *만든 페이지를 다시 찾아 아래의 원래 흐름(writable 검사 -> claim)으로 이어간다.*/
 	if(page == NULL){
-		return false;
+		uintptr_t rsp = user ? f->rsp : thread_current ()->user_rsp;
+		if(!is_stack_access (addr, rsp)){
+			return false;
+		}
+		if(!vm_stack_growth (addr)){
+			return false;
+		}
+		page = spt_find_page (spt, addr);
 	}
 	/*읽기 전용 페이지에 쓰려는 접근*/
 	if(write == true && page->writable ==false){
