@@ -8,6 +8,8 @@
 #include <string.h>
 /* 유저 스택이 커질 수 있는 최대 크기. 과제 기준 1MB. */
 #define STACK_MAX (1 << 20)
+/* x86-64의 PUSH가 rsp를 줄이기 전에 rsp 아래에서 건드리는 크기. */
+#define PUSH_ACCESS_SIZE 8
 
 /* 각 하위 시스템의 초기화 코드를 호출해서
  * 가상 메모리 하위 시스템을 초기화한다. */
@@ -177,15 +179,15 @@ vm_get_frame (void) {
 }
 
 /* ADDR이 RSP 기준으로 스택 접근처럼 보이면 true를 반환한다. 세 조건을 모두 만족해야 한다.
- * - RSP - 8 이상: 정상적인 스택 접근은 rsp 위에서 일어난다.
- *   단 PUSH는 rsp를 줄이기 전에 8바이트 아래를 먼저 건드리므로 그만큼은 허용한다.
+ * - RSP - PUSH_ACCESS_SIZE 이상: 정상적인 스택 접근은 rsp 위에서 일어난다.
+ *   단 PUSH는 rsp를 줄이기 전에 그 아래를 먼저 건드리므로 그만큼은 허용한다.
  *   그보다 더 아래(예: rsp - 4096)는 잘못된 접근으로 본다. (pt-grow-bad)
  * - USER_STACK 미만: 유저 스택 영역 안이어야 한다.
  * - USER_STACK - STACK_MAX 이상: 스택은 최대 1MB까지만 커질 수 있다.
  * vm_try_handle_fault와 check_address가 같은 기준을 쓰도록 이 함수 하나를 공유한다. */
 bool
 is_stack_access(void *addr, uintptr_t rsp){
-	if((uintptr_t) addr >= rsp - 8 && (uintptr_t) addr < USER_STACK && (uintptr_t) addr >= USER_STACK - STACK_MAX){
+	if((uintptr_t) addr >= rsp - PUSH_ACCESS_SIZE && (uintptr_t) addr < USER_STACK && (uintptr_t) addr >= USER_STACK - STACK_MAX){
 		return true;
 	}
 	return false;

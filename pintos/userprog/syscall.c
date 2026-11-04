@@ -208,7 +208,7 @@ check_buffer (const void *buffer, size_t size, bool write) {
 
 	/* 첫 검사는 BUFFER 주소 그대로 하고, 그 다음부터 다음 페이지의 시작 주소로 넘어간다.
 	   첫 페이지를 pg_round_down해서 넘기면, rsp 바로 위에서 시작하는 스택 버퍼가
-	   rsp - 8보다 아래 주소로 검사되어 스택 접근이 아니라고 잘못 거부된다. (page-merge-stk)
+	   is_stack_access가 허용하는 범위보다 아래 주소로 검사되어 잘못 거부된다. (page-merge-stk)
 	   SPT 검사는 spt_find_page가 안에서 내려서 찾으므로 결과가 같다. */
 	for (uintptr_t cur = (uintptr_t) buffer; cur <= end; cur = (uintptr_t) pg_round_down (cur) + PGSIZE) {
 		if (!check_address ((const void *) cur, write)) {
