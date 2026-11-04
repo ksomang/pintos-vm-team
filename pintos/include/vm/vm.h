@@ -1,26 +1,27 @@
 #ifndef VM_VM_H
 #define VM_VM_H
 #include <stdbool.h>
+#include <hash.h>
 #include "threads/palloc.h"
-
+ 
 enum vm_type {
-	/* page not initialized */
+	/* 초기화되지 않은 페이지 */
 	VM_UNINIT = 0,
-	/* page not related to the file, aka anonymous page */
+	/* 파일과 관련 없는 페이지, 즉 anonymous page */
 	VM_ANON = 1,
-	/* page that realated to the file */
+	/* 파일과 관련된 페이지 */
 	VM_FILE = 2,
-	/* page that hold the page cache, for project 4 */
+	/* 페이지 캐시를 담는 페이지, project 4용 */
 	VM_PAGE_CACHE = 3,
 
-	/* Bit flags to store state */
+	/* 상태를 저장하기 위한 비트 플래그 */
 
-	/* Auxillary bit flag marker for store information. You can add more
-	 * markers, until the value is fit in the int. */
+	/* 정보를 저장하기 위한 보조 비트 플래그 마커. 값이 int에 들어가는 한
+	 * 마커를 더 추가해도 된다. */
 	VM_MARKER_0 = (1 << 3),
 	VM_MARKER_1 = (1 << 4),
 
-	/* DO NOT EXCEED THIS VALUE. */
+	/* 이 값을 넘지 말 것. */
 	VM_MARKER_END = (1 << 31),
 };
 
@@ -35,20 +36,35 @@ struct page_operations;
 struct thread;
 
 #define VM_TYPE(type) ((type) & 7)
+/* 스택 페이지 표시. setup_stack과 vm_stack_growth가 VM_ANON과 함께 붙인다. */
+#define VM_STACK VM_MARKER_0
 
-/* The representation of "page".
- * This is kind of "parent class", which has four "child class"es, which are
- * uninit_page, file_page, anon_page, and page cache (project4).
- * DO NOT REMOVE/MODIFY PREDEFINED MEMBER OF THIS STRUCTURE. */
+/* lazy loading으로 파일에서 읽어 올 페이지 하나의 정보 (uninit 페이지의 aux).
+ * load_segment가 페이지마다 만들고, lazy_load_segment가 사용 후 해제한다.
+ * 페이지 등록에 실패하면 load_segment가 해제한다.
+ * fork 때는 supplemental_page_table_copy가 자식용 복사본을 따로 만들고, 파일은 자식의 running_file로 바꾼다.
+ * 한 번도 fault가 나지 않은 채 종료하면 uninit_destroy가 해제한다. */
+struct aux_info {
+	struct file *file_ptr;
+	off_t offset;
+	size_t read_bytes;
+	size_t zero_bytes;
+};
+
+/* "페이지"를 표현하는 구조체.
+ * 일종의 "부모 클래스"로, 네 개의 "자식 클래스"를 가진다:
+ * uninit_page, file_page, anon_page, 그리고 page cache (project4).
+ * 이 구조체에 미리 정의된 멤버는 지우거나 수정하지 말 것. */
 struct page {
 	const struct page_operations *operations;
-	void *va;              /* Address in terms of user space */
-	struct frame *frame;   /* Back reference for frame */
+	void *va;              /* 유저 공간 기준의 주소 */
+	struct frame *frame;   /* 프레임을 거꾸로 가리키는 참조 */
 
-	/* Your implementation */
-
-	/* Per-type data are binded into the union.
-	 * Each function automatically detects the current union */
+	/* 직접 구현할 부분 */
+	struct hash_elem hash_elem;
+	bool writable;                 
+	/* 타입별 데이터는 union으로 묶여 있다.
+	 * 각 함수가 현재 어떤 union 멤버인지 자동으로 판별한다 */
 	union {
 		struct uninit_page uninit;
 		struct anon_page anon;
@@ -59,16 +75,16 @@ struct page {
 	};
 };
 
-/* The representation of "frame" */
+/* "프레임"을 표현하는 구조체 */
 struct frame {
 	void *kva;
 	struct page *page;
 };
 
-/* The function table for page operations.
- * This is one way of implementing "interface" in C.
- * Put the table of "method" into the struct's member, and
- * call it whenever you needed. */
+/* 페이지 연산을 위한 함수 테이블.
+ * C에서 "인터페이스"를 구현하는 방법 중 하나다.
+ * "메서드" 테이블을 구조체 멤버로 넣어 두고,
+ * 필요할 때마다 호출한다. */
 struct page_operations {
 	bool (*swap_in) (struct page *, void *);
 	bool (*swap_out) (struct page *);
@@ -81,10 +97,11 @@ struct page_operations {
 #define destroy(page) \
 	if ((page)->operations->destroy) (page)->operations->destroy (page)
 
-/* Representation of current process's memory space.
- * We don't want to force you to obey any specific design for this struct.
- * All designs up to you for this. */
+/* 현재 프로세스의 메모리 공간을 표현하는 구조체.
+ * 이 구조체에 대해 특정 설계를 강요하지 않는다.
+ * 설계는 전부 여러분에게 달려 있다. */
 struct supplemental_page_table {
+	struct hash pages;
 };
 
 #include "threads/thread.h"
@@ -109,4 +126,7 @@ void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
 
+/* ADDR이 RSP 기준으로 스택 접근처럼 보이면 true.
+   page fault 처리와 syscall 주소 검사가 같은 기준을 쓰도록 여기 선언한다. */
+bool is_stack_access (void *addr, uintptr_t rsp);
 #endif  /* VM_VM_H */

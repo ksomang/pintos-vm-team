@@ -131,6 +131,10 @@ struct thread {
 #ifdef VM
 	/* 스레드가 가진 가상 메모리 전체에 대한 테이블. */
 	struct supplemental_page_table spt;
+	/* syscall에 들어올 때 syscall_handler가 저장한 유저 rsp.
+	   커널 모드에서 난 page fault는 f->rsp가 커널 스택 주소라서,
+	   스택 접근인지 판단할 때 대신 이 값을 쓴다. (vm_try_handle_fault, check_address) */
+	uintptr_t user_rsp;
 #endif
 
 	/* thread.c가 관리하는 필드. */

@@ -406,6 +406,20 @@ __do_fork (void *aux) {
 		goto error;
 
 	process_activate (current);
+
+	/* 자식도 같은 프로그램을 실행하므로, 실행 파일을 복제해 쓰기 막기를 하나 더 건다.
+	   SPT copy가 아직 안 올라온 페이지의 aux 파일을 이 running_file로 바꾸므로 copy보다 먼저 복제한다.
+	   실패 검사는 lock을 푼 다음에 한다. error 뒤 process_exit의 정리 과정이 같은 lock을 또 잡는다. */
+	if (parent->running_file != NULL) {
+		lock_acquire (&filesys_lock);
+		current->running_file = file_duplicate (parent->running_file);
+		lock_release (&filesys_lock);
+
+		if (current->running_file == NULL) {
+			goto error;
+		}
+	}
+
 #ifdef VM
 	supplemental_page_table_init (&current->spt);
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
@@ -420,18 +434,6 @@ __do_fork (void *aux) {
 
 	if (!duplicate_fd_table (parent)) {
 		goto error;
-	}
-
-	/* 자식도 같은 프로그램을 실행하므로, 실행 파일을 복제해 쓰기 막기를 하나 더 건다.
-	   실패 검사는 lock을 푼 다음에 한다. error 뒤에 destroy_fd_table이 같은 lock을 또 잡는다. */
-	if (parent->running_file != NULL) {
-		lock_acquire (&filesys_lock);
-		current->running_file = file_duplicate (parent->running_file);
-		lock_release (&filesys_lock);
-
-		if (current->running_file == NULL) {
-			goto error;
-		}
 	}
 
 	info->fork_success = true;
@@ -975,31 +977,56 @@ install_page (void *upage, void *kpage, bool writable) {
 			&& pml4_set_page (t->pml4, upage, kpage, writable));
 }
 #else
-/* From here, codes will be used after project 3.
- * If you want to implement the function for only project 2, implement it on the
- * upper block. */
+/* 여기부터는 project 3 이후에 쓰이는 코드다.
+ * project 2에서만 쓸 함수를 구현하고 싶다면, 위쪽 블록에
+ * 구현하라. */
+
+static struct aux_info *
+create_aux_info(struct file *file, off_t ofs, size_t page_read_bytes,size_t page_zero_bytes){
+	struct aux_info *aux_info = malloc(sizeof (struct aux_info));
+	if (aux_info == NULL){
+		return NULL;
+	}
+	aux_info->file_ptr = file;
+	aux_info->offset = ofs;
+	aux_info->read_bytes = page_read_bytes;
+	aux_info->zero_bytes = page_zero_bytes;
+	
+	return aux_info;
+}
 
 static bool
 lazy_load_segment (struct page *page, void *aux) {
-	/* TODO: Load the segment from the file */
-	/* TODO: This called when the first page fault occurs on address VA. */
-	/* TODO: VA is available when calling this function. */
+	/* aux에 담긴 정보로 파일을 읽어 프레임을 채우고, 남은 부분은 0으로 채운다 */
+	struct aux_info *aux_info = aux;
+	void *kva = page->frame->kva;
+	/* fault 중에 파일을 읽으므로 filesys_lock을 쥔다.
+	 * syscall이 이미 lock을 쥔 채 fault가 났을 수 있으니, 내가 잡았을 때만 푼다. */
+	bool acquired = filesys_lock_acquire_if_needed();
+	off_t actual_read = file_read_at(aux_info->file_ptr, kva, aux_info->read_bytes, aux_info->offset);
+	filesys_lock_release_if_acquired(acquired);
+	bool read_succ = (actual_read == (off_t) aux_info->read_bytes);
+	if(read_succ == true){
+		memset(kva + aux_info->read_bytes, 0, aux_info->zero_bytes);
+	}
+	free(aux);
+	return read_succ;
 }
 
-/* Loads a segment starting at offset OFS in FILE at address
- * UPAGE.  In total, READ_BYTES + ZERO_BYTES bytes of virtual
- * memory are initialized, as follows:
+/* FILE의 오프셋 OFS에서 시작하는 세그먼트를 주소 UPAGE에
+ * 로드한다. 총 READ_BYTES + ZERO_BYTES 바이트의 가상 메모리가
+ * 다음과 같이 초기화된다:
  *
- * - READ_BYTES bytes at UPAGE must be read from FILE
- * starting at offset OFS.
+ * - UPAGE의 READ_BYTES 바이트는 FILE의 오프셋 OFS부터
+ * 읽어 와야 한다.
  *
- * - ZERO_BYTES bytes at UPAGE + READ_BYTES must be zeroed.
+ * - UPAGE + READ_BYTES의 ZERO_BYTES 바이트는 0으로 채워야 한다.
  *
- * The pages initialized by this function must be writable by the
- * user process if WRITABLE is true, read-only otherwise.
+ * 이 함수가 초기화한 페이지는 WRITABLE이 true면 유저 프로세스가
+ * 쓸 수 있어야 하고, 아니면 읽기 전용이어야 한다.
  *
- * Return true if successful, false if a memory allocation error
- * or disk read error occurs. */
+ * 성공하면 true를, 메모리 할당 에러나 디스크 읽기 에러가
+ * 나면 false를 반환한다. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
@@ -1008,37 +1035,50 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 	ASSERT (ofs % PGSIZE == 0);
 
 	while (read_bytes > 0 || zero_bytes > 0) {
-		/* Do calculate how to fill this page.
-		 * We will read PAGE_READ_BYTES bytes from FILE
-		 * and zero the final PAGE_ZERO_BYTES bytes. */
+		/* 이 페이지를 어떻게 채울지 계산한다.
+		 * FILE에서 PAGE_READ_BYTES 바이트를 읽고
+		 * 마지막 PAGE_ZERO_BYTES 바이트는 0으로 채운다. */
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+		struct aux_info *aux = create_aux_info(file, ofs, page_read_bytes, page_zero_bytes);
+		if(aux == NULL){
 			return false;
+		}
 
-		/* Advance. */
+		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
+					writable, lazy_load_segment, aux)){
+			free(aux);
+			return false;
+		}
+
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		/*ofs 갱신*/
+		ofs += page_read_bytes;
 	}
 	return true;
 }
 
-/* Create a PAGE of stack at the USER_STACK. Return true on success. */
+/* USER_STACK에 스택 PAGE를 하나 만든다. 성공하면 true를 반환한다. */
 static bool
 setup_stack (struct intr_frame *if_) {
-	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
+	/*스택 표시(VM_STACK)를 단 anon 페이지를 등록하고 즉시 claim한 뒤 rsp를 USER_STACK으로 둔다*/
+	bool spt_enroll_result = vm_alloc_page_with_initializer(VM_ANON | VM_STACK, stack_bottom, true, NULL, NULL);
+	if(!spt_enroll_result){
+		return false;
+	}
 
-	return success;
+	bool claim_result = vm_claim_page(stack_bottom);
+	if(!claim_result){
+		return false;
+	}
+	
+	if_->rsp = USER_STACK;
+
+	return true;
 }
 #endif /* VM */

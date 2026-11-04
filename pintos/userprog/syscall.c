@@ -22,10 +22,13 @@
 #include "filesys/file.h"
 #include "threads/palloc.h"
 #include "devices/input.h"
+#ifdef VM
+#include "vm/vm.h"
+#endif
 
 void syscall_entry (void);
-static bool check_address (const void *addr);
-static bool check_buffer (const void *buffer, size_t size);
+static bool check_address (const void *addr, bool write);
+static bool check_buffer (const void *buffer, size_t size, bool write);
 static bool check_string (const char *str);
 static void sys_halt (void);
 static int sys_read (int fd, void *buffer, unsigned length);
@@ -59,6 +62,34 @@ void syscall_handler (struct intr_frame *);
    파일 시스템 함수 호출을 감싸는 전역 lock.
    process.c(load 등)에서도 같은 lock을 써야 해서 static이 아니다. */
 struct lock filesys_lock;
+
+/* filesys_lock을 아직 안 쥐고 있을 때만 잡는다.
+   이번 호출에서 잡았으면 true, 이미 쥐고 있어서 안 잡았으면 false를 돌려준다.
+
+   page fault 처리 중(lazy load)에 파일을 읽을 때 쓴다.
+   syscall이 filesys_lock을 쥔 채 사용자 메모리를 건드리다 fault가 나면
+   같은 스레드가 lock을 다시 잡게 되고, lock_acquire의 ASSERT에 걸려 PANIC한다.
+   그래서 이미 쥐고 있으면 다시 잡지 않는다.
+
+   반환값은 filesys_lock_release_if_acquired에 그대로 넘겨서 푼다. */
+bool
+filesys_lock_acquire_if_needed (void) {
+	if (lock_held_by_current_thread (&filesys_lock)) {
+		return false;
+	}
+	lock_acquire (&filesys_lock);
+	return true;
+}
+
+/* filesys_lock_acquire_if_needed가 잡았을 때(ACQUIRED가 true)만 filesys_lock을 푼다.
+   내가 잡지 않은 lock을 풀면 바깥 syscall이 쥔 lock이 풀려 버리므로,
+   이미 쥐고 있어서 안 잡았던 경우(false)는 그대로 둔다. */
+void
+filesys_lock_release_if_acquired (bool acquired) {
+	if (acquired) {
+		lock_release (&filesys_lock);
+	}
+}
 
 void
 syscall_init (void) {
@@ -129,30 +160,58 @@ duplicate_fd_table (struct thread *parent) {
 }
 
 /* 사용자가 넘긴 주소 하나가 안전한지 검사한다.
-   NULL, 커널 주소, 매핑되지 않은 주소면 false를 돌려준다.
+   NULL, 커널 주소, 등록되지 않은 주소면 false를 돌려준다.
+   WRITE가 true면 커널이 이 주소에 쓸 예정이므로, 읽기 전용 페이지도 false다.
    안전하면 true를 돌려준다.
-   TODO: Project 3에서 lazy loading이 들어가면 수정이 필요하다.
-         아직 안 올라온 페이지도 올바른 주소일 수 있다. */
+
+   VM에서는 SPT에 등록된 주소면 아직 안 올라왔어도 정상이다.
+   실제로 접근할 때 page fault로 올라온다.
+   SPT에 없어도 스택 접근(is_stack_access)이면 정상이다. 아직 커지지 않은 스택 버퍼를
+   syscall에 처음 넘기는 경우로, 페이지는 여기서 만들지 않고 커널이 접근할 때
+   page fault가 나서 vm_try_handle_fault가 만든다. */
 static bool
-check_address (const void *addr) {
-	if (addr == NULL || !is_user_vaddr (addr) || pml4_get_page(thread_current ()->pml4, addr) == NULL) {
+check_address (const void *addr, bool write) {
+	if (addr == NULL || !is_user_vaddr (addr)) {
+		return false;
+	}
+#ifdef VM
+	struct page *page = spt_find_page (&thread_current ()->spt, (void *) addr);
+
+	/* SPT에 없으면 스택 접근일 때만 허용한다.
+	   커널 모드라 f->rsp를 쓸 수 없으므로 syscall_handler가 저장한 user_rsp로 판단한다.
+	   스택 페이지는 항상 writable이라 WRITE는 따로 검사하지 않는다. */
+	if (page == NULL) {
+		return is_stack_access ((void *) addr, thread_current ()->user_rsp);
+	}
+
+	/* 커널이 쓸 버퍼인데 읽기 전용 페이지면 안 된다. (예: 코드 영역에 read) */
+	if (write && !page->writable) {
 		return false;
 	}
 	return true;
+#else
+	/* Project 2에는 lazy loading이 없으니 매핑돼 있으면 안전하다. */
+	(void) write;
+	return pml4_get_page (thread_current ()->pml4, addr) != NULL;
+#endif
 }
 
 /* BUFFER부터 SIZE바이트가 걸친 모든 페이지를 페이지마다 한 번씩 검사한다.
-   첫 바이트만 보면 버퍼가 다음 페이지로 넘어가는 경우를 놓친다. */
+   첫 바이트만 보면 버퍼가 다음 페이지로 넘어가는 경우를 놓친다.
+   WRITE가 true면 커널이 이 버퍼에 쓸 예정이다. (read는 true, write는 false) */
 static bool
-check_buffer (const void *buffer, size_t size) {
+check_buffer (const void *buffer, size_t size, bool write) {
 	if (size == 0)
 		return true;
 
-	uintptr_t start_page = (uintptr_t) pg_round_down (buffer);
 	uintptr_t end = (uintptr_t) buffer + size - 1;
 
-	for (uintptr_t page = start_page; page <= end; page += PGSIZE) {
-		if (!check_address ((const void *) page)) {
+	/* 첫 검사는 BUFFER 주소 그대로 하고, 그 다음부터 다음 페이지의 시작 주소로 넘어간다.
+	   첫 페이지를 pg_round_down해서 넘기면, rsp 바로 위에서 시작하는 스택 버퍼가
+	   is_stack_access가 허용하는 범위보다 아래 주소로 검사되어 잘못 거부된다. (page-merge-stk)
+	   SPT 검사는 spt_find_page가 안에서 내려서 찾으므로 결과가 같다. */
+	for (uintptr_t cur = (uintptr_t) buffer; cur <= end; cur = (uintptr_t) pg_round_down (cur) + PGSIZE) {
+		if (!check_address ((const void *) cur, write)) {
 			return false;
 		}
 	}
@@ -239,14 +298,15 @@ fd_to_file (int fd) {
 	return fd_table[fd];
 }
 
-/* 문자열 STR을 '\0'까지 따라가며, 첫 글자와 새 페이지에 들어설 때마다 검사한다. */
+/* 문자열 STR을 '\0'까지 따라가며, 첫 글자와 새 페이지에 들어설 때마다 검사한다.
+   문자열은 읽기만 하므로 WRITE는 false다. */
 static bool
 check_string (const char *str) {
 	const char *p = str;
 
 	while (true) {
 		if (p == str || pg_ofs (p) == 0) {
-			if (!check_address (p)) {
+			if (!check_address (p, false)) {
 				return false;
 			}
 		}
@@ -270,7 +330,8 @@ sys_halt (void) {
    버퍼가 잘못된 주소면 프로세스를 exit(-1)로 끝낸다. */
 static int
 sys_read (int fd, void *buffer, unsigned length) {
-	if (!check_buffer (buffer, length)) {
+	/* 파일 내용을 버퍼에 쓰므로 쓰기 가능한지까지 검사한다. */
+	if (!check_buffer (buffer, length, true)) {
 		sys_exit (-1);
 	}
 
@@ -298,7 +359,8 @@ sys_read (int fd, void *buffer, unsigned length) {
    버퍼가 잘못된 주소면 프로세스를 exit(-1)로 끝낸다. */
 static int
 sys_write (int fd, const void *buffer, unsigned length) {
-	if (!check_buffer (buffer, length)) {
+	/* 버퍼는 읽기만 하므로 읽기 전용 페이지여도 된다. */
+	if (!check_buffer (buffer, length, false)) {
 		sys_exit (-1);
 	}
 
@@ -460,6 +522,12 @@ sys_exec (const char *cmd_line) {
    결과를 f->R.rax에 넣으면 사용자가 반환값으로 받는다. */
 void
 syscall_handler (struct intr_frame *f) {
+#ifdef VM
+	/* syscall 처리 중 커널 모드에서 page fault가 나면 f->rsp가 커널 스택이라 스택 접근을 판단할 수 없다.
+	   그래서 유저 rsp가 정확히 들어 있는 지금 저장해 둔다. 어떤 syscall이든 주소 검사 전에 저장되도록 맨 앞에 둔다. */
+	thread_current ()->user_rsp = f->rsp;
+#endif
+
 	switch (f->R.rax) {
 		case SYS_HALT:
 			sys_halt ();
